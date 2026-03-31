@@ -1,0 +1,110 @@
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, Enum
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+from database import Base
+import enum
+
+
+class RoomType(str, enum.Enum):
+    STANDARD = "standard"
+    DELUXE = "deluxe"
+    SUITE = "suite"
+    PENTHOUSE = "penthouse"
+
+
+class BookingStatus(str, enum.Enum):
+    PENDING = "pending"
+    CONFIRMED = "confirmed"
+    CANCELLED = "cancelled"
+    COMPLETED = "completed"
+
+
+class PaymentStatus(str, enum.Enum):
+    PENDING = "pending"
+    PAID = "paid"
+    FAILED = "failed"
+    REFUNDED = "refunded"
+
+
+class TransactionStatus(str, enum.Enum):
+    PENDING = "pending"
+    SUCCESS = "success"
+    FAILED = "failed"
+    REFUNDED = "refunded"
+
+
+class Room(Base):
+    __tablename__ = "rooms"
+
+    id = Column(Integer, primary_key=True, index=True)
+    hotel_name = Column(String(200), nullable=False)
+    room_type = Column(Enum(RoomType), nullable=False)
+    description = Column(Text)
+    price = Column(Float, nullable=False)
+    original_price = Column(Float)
+    availability = Column(Boolean, default=True)
+    rating = Column(Float, default=4.5)
+    review_count = Column(Integer, default=0)
+    image_url = Column(String(500))
+    gallery_urls = Column(Text)  # JSON array of URLs
+    amenities = Column(Text)     # JSON array of amenities
+    location = Column(String(200))
+    city = Column(String(100))
+    country = Column(String(100))
+    max_guests = Column(Integer, default=2)
+    beds = Column(Integer, default=1)
+    bathrooms = Column(Integer, default=1)
+    size_sqft = Column(Integer)
+    floor = Column(Integer)
+    is_featured = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    bookings = relationship("Booking", back_populates="room")
+
+
+class Booking(Base):
+    __tablename__ = "bookings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    booking_ref = Column(String(20), unique=True, index=True)
+    user_name = Column(String(100), nullable=False)
+    email = Column(String(200), nullable=False)
+    phone = Column(String(20))
+    room_id = Column(Integer, ForeignKey("rooms.id"), nullable=False)
+    check_in = Column(DateTime(timezone=True), nullable=False)
+    check_out = Column(DateTime(timezone=True), nullable=False)
+    guests = Column(Integer, default=1)
+    nights = Column(Integer, nullable=False)
+    room_rate = Column(Float, nullable=False)
+    taxes = Column(Float, default=0.0)
+    service_fee = Column(Float, default=0.0)
+    total_amount = Column(Float, nullable=False)
+    status = Column(Enum(BookingStatus), default=BookingStatus.PENDING)
+    payment_status = Column(Enum(PaymentStatus), default=PaymentStatus.PENDING)
+    special_requests = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    room = relationship("Room", back_populates="bookings")
+    transaction = relationship("Transaction", back_populates="booking", uselist=False)
+
+
+class Transaction(Base):
+    __tablename__ = "transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    booking_id = Column(Integer, ForeignKey("bookings.id"), nullable=False)
+    transaction_ref = Column(String(100), unique=True, index=True)
+    stripe_payment_intent_id = Column(String(200))
+    amount = Column(Float, nullable=False)
+    currency = Column(String(10), default="USD")
+    payment_method = Column(String(50))  # card, mock
+    card_last4 = Column(String(4))
+    card_brand = Column(String(20))
+    status = Column(Enum(TransactionStatus), default=TransactionStatus.PENDING)
+    failure_reason = Column(String(500))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    booking = relationship("Booking", back_populates="transaction")
