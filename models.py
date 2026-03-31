@@ -5,6 +5,10 @@ from database import Base
 import enum
 
 
+def enum_values(enum_cls: type[enum.Enum]) -> list[str]:
+    return [member.value for member in enum_cls]
+
+
 class RoomType(str, enum.Enum):
     STANDARD = "standard"
     DELUXE = "deluxe"
@@ -38,7 +42,14 @@ class Room(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     hotel_name = Column(String(200), nullable=False)
-    room_type = Column(Enum(RoomType), nullable=False)
+    room_type = Column(
+        Enum(
+            RoomType,
+            name="room_type",
+            values_callable=enum_values,
+        ),
+        nullable=False,
+    )
     description = Column(Text)
     price = Column(Float, nullable=False)
     original_price = Column(Float)
@@ -80,8 +91,22 @@ class Booking(Base):
     taxes = Column(Float, default=0.0)
     service_fee = Column(Float, default=0.0)
     total_amount = Column(Float, nullable=False)
-    status = Column(Enum(BookingStatus), default=BookingStatus.PENDING)
-    payment_status = Column(Enum(PaymentStatus), default=PaymentStatus.PENDING)
+    status = Column(
+        Enum(
+            BookingStatus,
+            name="booking_status",
+            values_callable=enum_values,
+        ),
+        default=BookingStatus.PENDING,
+    )
+    payment_status = Column(
+        Enum(
+            PaymentStatus,
+            name="payment_status",
+            values_callable=enum_values,
+        ),
+        default=PaymentStatus.PENDING,
+    )
     special_requests = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -102,7 +127,14 @@ class Transaction(Base):
     payment_method = Column(String(50))  # card, mock
     card_last4 = Column(String(4))
     card_brand = Column(String(20))
-    status = Column(Enum(TransactionStatus), default=TransactionStatus.PENDING)
+    status = Column(
+        Enum(
+            TransactionStatus,
+            name="transaction_status",
+            values_callable=enum_values,
+        ),
+        default=TransactionStatus.PENDING,
+    )
     failure_reason = Column(String(500))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
