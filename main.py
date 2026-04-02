@@ -63,7 +63,7 @@ def root():
     }
 
 
-@app.get("/health", tags=["Health"])
+@app.api_route("/health", methods=["GET", "HEAD"], tags=["Health"])
 def health_check():
     try:
         with engine.connect() as connection:
