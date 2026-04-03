@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 import models
 import schemas
 from database import get_db, settings
+from services.rate_limit_service import enforce_rate_limit
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -114,7 +115,8 @@ def get_current_admin(user: models.User = Depends(get_current_user)) -> models.U
 
 
 @router.post("/signup", response_model=schemas.TokenResponse, status_code=201)
-def signup(payload: schemas.UserSignup, db: Session = Depends(get_db)):
+def signup(payload: schemas.UserSignup, request: Request, db: Session = Depends(get_db)):
+    enforce_rate_limit("auth:signup", request, subject=payload.email.lower())
     existing_user = db.query(models.User).filter(models.User.email == payload.email).first()
     if existing_user:
         raise HTTPException(status_code=409, detail="Email already registered")
@@ -133,7 +135,8 @@ def signup(payload: schemas.UserSignup, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=schemas.TokenResponse)
-def login(payload: schemas.UserLogin, db: Session = Depends(get_db)):
+def login(payload: schemas.UserLogin, request: Request, db: Session = Depends(get_db)):
+    enforce_rate_limit("auth:login", request, subject=payload.email.lower())
     user = db.query(models.User).filter(models.User.email == payload.email).first()
     if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid email or password")

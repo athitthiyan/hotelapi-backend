@@ -223,3 +223,17 @@ class RoomInventory(Base):
     lock_expires_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    actor_user_id = Column(Integer, ForeignKey("users.id"))
+    action = Column(String(100), nullable=False, index=True)
+    entity_type = Column(String(50), nullable=False, index=True)
+    entity_id = Column(String(100), nullable=False, index=True)
+    metadata_json = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    actor = relationship("User")

@@ -24,3 +24,17 @@ def test_database_settings_support_lowercase_aliases(monkeypatch):
 
     assert database.settings.database_url == "sqlite:///./alias-test.db"
     assert database.settings.auto_create_schema is True
+
+
+def test_production_runtime_configuration_requires_strong_secret(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///./prod-test.db")
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("SECRET_KEY", "short-key")
+
+    database = reload_database_module()
+
+    try:
+        database.validate_runtime_configuration(database.settings)
+        assert False, "Expected production config validation to fail"
+    except RuntimeError as exc:
+        assert "Production SECRET_KEY must be set" in str(exc)

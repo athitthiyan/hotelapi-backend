@@ -40,6 +40,10 @@ class Settings(BaseSettings):
         default="change-this-in-production",
         validation_alias=AliasChoices("SECRET_KEY", "secret_key"),
     )
+    app_env: str = Field(
+        default="development",
+        validation_alias=AliasChoices("APP_ENV", "app_env", "ENVIRONMENT", "environment"),
+    )
     allowed_origins: str = Field(
         default="http://localhost:4200,https://stayease-booking-app.vercel.app,https://payflow-payment-app.vercel.app,https://insightboard-admin.vercel.app",
         validation_alias=AliasChoices("ALLOWED_ORIGINS", "allowed_origins"),
@@ -72,6 +76,18 @@ class Settings(BaseSettings):
 @lru_cache()
 def get_settings():
     return Settings()
+
+
+def validate_runtime_configuration(config: Settings) -> None:
+    if config.app_env.lower() != "production":
+        return
+
+    insecure_default = config.secret_key == "change-this-in-production"
+    too_short = len(config.secret_key) < 32
+    if insecure_default or too_short:
+        raise RuntimeError(
+            "Production SECRET_KEY must be set and at least 32 characters long"
+        )
 
 
 settings = get_settings()

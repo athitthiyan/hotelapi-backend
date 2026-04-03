@@ -15,7 +15,8 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///./test_bootstrap.db")
 
 import models  # noqa: E402
 from database import Base, get_db  # noqa: E402
-from routers import analytics, auth, bookings, notifications, payments, rooms  # noqa: E402
+from routers import analytics, auth, bookings, notifications, ops, payments, rooms  # noqa: E402
+from services.rate_limit_service import reset_rate_limits  # noqa: E402
 
 
 @pytest.fixture()
@@ -35,6 +36,7 @@ def app(tmp_path):
     app.include_router(rooms.router)
     app.include_router(analytics.router)
     app.include_router(notifications.router)
+    app.include_router(ops.router)
 
     def override_get_db():
         db = TestingSessionLocal()
@@ -58,6 +60,13 @@ def app(tmp_path):
 def client(app):
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limit_state():
+    reset_rate_limits()
+    yield
+    reset_rate_limits()
 
 
 @pytest.fixture()

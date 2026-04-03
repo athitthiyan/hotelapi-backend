@@ -4,12 +4,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, func
 from sqlalchemy.orm import Session, joinedload
 
 import models
 import schemas
 from database import get_db
+from routers.auth import get_current_admin
+from services.audit_service import write_audit_log
 from services.inventory_service import (
     is_inventory_available,
     lock_inventory_for_booking,
@@ -307,3 +309,58 @@ def cancel_booking(booking_id: int, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(booking)
     return booking
+
+
+@router.get("/admin/dashboard", response_model=schemas.BookingDashboardResponse)
+def get_booking_dashboard(
+    email: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    payment_status: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _admin: models.User = Depends(get_current_admin),
+):
+    release_expired_holds(db)
+    query = db.query(models.Booking).options(joinedload(models.Booking.room))
+    if email:
+        query = query.filter(models.Booking.email == email)
+    if status:
+        query = query.filter(models.Booking.status == status)
+    if payment_status:
+        query = query.filter(models.Booking.payment_status == payment_status)
+
+    total = query.count()
+    bookings = (
+        query.order_by(models.Booking.created_at.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+        .all()
+    )
+
+    pending_count = (
+        db.query(func.count(models.Booking.id))
+        .filter(models.Booking.status == models.BookingStatus.PENDING)
+        .scalar()
+        or 0
+    )
+    confirmed_count = (
+        db.query(func.count(models.Booking.id))
+        .filter(models.Booking.status == models.BookingStatus.CONFIRMED)
+        .scalar()
+        or 0
+    )
+    failed_payment_count = (
+        db.query(func.count(models.Booking.id))
+        .filter(models.Booking.payment_status == models.PaymentStatus.FAILED)
+        .scalar()
+        or 0
+    )
+
+    return {
+        "bookings": bookings,
+        "total": total,
+        "pending_count": pending_count,
+        "confirmed_count": confirmed_count,
+        "failed_payment_count": failed_payment_count,
+    }

@@ -10,17 +10,23 @@ from sqlalchemy.orm import Session, joinedload
 import models
 import schemas
 from database import get_db, settings
+from routers.auth import get_current_admin
 from routers.bookings import expire_stale_booking_hold, release_expired_holds
+from services.audit_service import write_audit_log
 from services.inventory_service import confirm_inventory_for_booking, release_inventory_for_booking
 from services.notification_service import (
+    queue_booking_cancellation_email,
     queue_booking_confirmation_email,
     queue_payment_failure_email,
     queue_payment_receipt_email,
 )
+from services.rate_limit_service import enforce_rate_limit
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
 RECONCILIATION_TIMEOUT_MINUTES = 30
+FAILED_PAYMENT_BLOCK_WINDOW_MINUTES = 30
+FAILED_PAYMENT_BLOCK_THRESHOLD = 3
 
 
 def utc_now() -> datetime:
@@ -122,6 +128,30 @@ def get_active_transaction_for_booking(
     )
 
 
+def has_recent_failed_payment_burst(
+    db: Session,
+    booking_id: int,
+    now: Optional[datetime] = None,
+) -> bool:
+    now = now or utc_now()
+    cutoff = now - timedelta(minutes=FAILED_PAYMENT_BLOCK_WINDOW_MINUTES)
+    recent_failures = (
+        db.query(models.Transaction)
+        .filter(
+            models.Transaction.booking_id == booking_id,
+            models.Transaction.status.in_(
+                [
+                    models.TransactionStatus.FAILED,
+                    models.TransactionStatus.EXPIRED,
+                ]
+            ),
+            models.Transaction.created_at >= cutoff,
+        )
+        .count()
+    )
+    return recent_failures >= FAILED_PAYMENT_BLOCK_THRESHOLD
+
+
 def ensure_booking_can_accept_payment(db: Session, booking: models.Booking) -> models.Booking:
     release_expired_holds(db, booking_id=booking.id)
     db.refresh(booking)
@@ -139,6 +169,11 @@ def ensure_booking_can_accept_payment(db: Session, booking: models.Booking) -> m
         raise HTTPException(status_code=409, detail="Booking already paid")
     if get_success_transaction_for_booking(db, booking.id):
         raise HTTPException(status_code=409, detail="Booking already paid")
+    if has_recent_failed_payment_burst(db, booking.id):
+        raise HTTPException(
+            status_code=429,
+            detail="Payment attempts temporarily blocked due to repeated failures",
+        )
     return booking
 
 
@@ -391,8 +426,10 @@ def reconcile_stuck_payments(
 @router.post("/create-payment-intent")
 def create_payment_intent(
     payload: schemas.CreatePaymentIntent,
+    request: Request,
     db: Session = Depends(get_db),
 ):
+    enforce_rate_limit("payments:create-intent", request, subject=str(payload.booking_id))
     booking = ensure_booking_can_accept_payment(db, get_booking_or_404(db, payload.booking_id))
     idempotency_key = payload.idempotency_key or f"pay_{uuid.uuid4().hex}"
 
@@ -494,12 +531,14 @@ def confirm_payment_success(
 
 @router.post("/payment-failure")
 def record_payment_failure(
+    request: Request,
     booking_id: int,
     reason: str = "Payment declined",
     payment_intent_id: Optional[str] = None,
     transaction_ref: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
+    enforce_rate_limit("payments:failure", request, subject=str(booking_id))
     booking = get_booking_or_404(db, booking_id)
     release_expired_holds(db, booking_id=booking.id)
     db.refresh(booking)
@@ -541,8 +580,18 @@ def get_payment_status(booking_id: int, db: Session = Depends(get_db)):
 def reconcile_stuck_payment_attempts(
     timeout_minutes: int = Query(RECONCILIATION_TIMEOUT_MINUTES, ge=1, le=1440),
     db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
 ):
     updated = reconcile_stuck_payments(db, timeout_minutes=timeout_minutes)
+    write_audit_log(
+        db,
+        actor_user_id=admin.id,
+        action="payments.reconcile",
+        entity_type="payment",
+        entity_id="stuck-attempts",
+        metadata={"timeout_minutes": timeout_minutes, "updated": updated},
+    )
+    db.commit()
     return {"message": "Reconciliation completed", "updated": updated}
 
 
@@ -552,6 +601,7 @@ def get_transactions(
     page: int = Query(1, ge=1),
     per_page: int = Query(10),
     db: Session = Depends(get_db),
+    _admin: models.User = Depends(get_current_admin),
 ):
     query = db.query(models.Transaction).options(
         joinedload(models.Transaction.booking).joinedload(models.Booking.room)
@@ -580,6 +630,107 @@ def get_transaction(txn_id: int, db: Session = Depends(get_db)):
     if not txn:
         raise HTTPException(status_code=404, detail="Transaction not found")
     return txn
+
+
+@router.post("/refund")
+def refund_payment(
+    payload: schemas.RefundRequest,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    booking = get_booking_or_404(db, payload.booking_id)
+    if booking.payment_status != models.PaymentStatus.PAID:
+        raise HTTPException(status_code=400, detail="Only paid bookings can be refunded")
+
+    transaction = get_success_transaction_for_booking(db, booking.id)
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Successful transaction not found")
+
+    transaction.status = models.TransactionStatus.REFUNDED
+    transaction.failure_reason = payload.reason
+    booking.payment_status = models.PaymentStatus.REFUNDED
+    booking.status = models.BookingStatus.CANCELLED
+    release_inventory_for_booking(db, booking=booking)
+    queue_booking_cancellation_email(db, booking)
+    write_audit_log(
+        db,
+        actor_user_id=admin.id,
+        action="payment.refund",
+        entity_type="booking",
+        entity_id=booking.id,
+        metadata={"transaction_ref": transaction.transaction_ref, "reason": payload.reason},
+    )
+    db.commit()
+    return {
+        "message": "Refund recorded successfully",
+        "booking_id": booking.id,
+        "transaction_ref": transaction.transaction_ref,
+    }
+
+
+@router.get("/admin/reconciliation")
+def get_payment_reconciliation_dashboard(
+    db: Session = Depends(get_db),
+    _admin: models.User = Depends(get_current_admin),
+):
+    pending = (
+        db.query(models.Transaction)
+        .filter(models.Transaction.status == models.TransactionStatus.PENDING)
+        .count()
+    )
+    processing = (
+        db.query(models.Transaction)
+        .filter(models.Transaction.status == models.TransactionStatus.PROCESSING)
+        .count()
+    )
+    failed = (
+        db.query(models.Transaction)
+        .filter(models.Transaction.status == models.TransactionStatus.FAILED)
+        .count()
+    )
+    refunded = (
+        db.query(models.Transaction)
+        .filter(models.Transaction.status == models.TransactionStatus.REFUNDED)
+        .count()
+    )
+    expired = (
+        db.query(models.Transaction)
+        .filter(models.Transaction.status == models.TransactionStatus.EXPIRED)
+        .count()
+    )
+
+    recent_failures = (
+        db.query(models.Transaction)
+        .options(joinedload(models.Transaction.booking))
+        .filter(
+            models.Transaction.status.in_(
+                [
+                    models.TransactionStatus.FAILED,
+                    models.TransactionStatus.EXPIRED,
+                ]
+            )
+        )
+        .order_by(models.Transaction.created_at.desc(), models.Transaction.id.desc())
+        .limit(10)
+        .all()
+    )
+
+    return {
+        "pending_attempts": pending,
+        "processing_attempts": processing,
+        "failed_attempts": failed,
+        "refunded_attempts": refunded,
+        "expired_attempts": expired,
+        "recent_failures": [
+            {
+                "transaction_ref": txn.transaction_ref,
+                "status": txn.status.value,
+                "booking_ref": txn.booking.booking_ref if txn.booking else None,
+                "failure_reason": txn.failure_reason,
+            }
+            for txn in recent_failures
+        ],
+    }
 
 
 @router.post("/webhook")

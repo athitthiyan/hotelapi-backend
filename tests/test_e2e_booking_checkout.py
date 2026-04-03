@@ -104,7 +104,7 @@ def test_e2e_customer_booking_to_confirmation_flow(client, db_session):
     payment_status = client.get(f"/payments/status/{booking_body['id']}")
     admin_outbox = client.get("/notifications/outbox", headers=admin_headers)
     process_notifications = client.post("/notifications/process", headers=admin_headers)
-    transactions = client.get("/payments/transactions")
+    transactions = client.get("/payments/transactions", headers=admin_headers)
 
     assert booking_by_ref.status_code == 200
     assert booking_by_ref.json()["status"] == "confirmed"

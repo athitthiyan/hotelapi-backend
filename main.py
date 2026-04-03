@@ -7,8 +7,8 @@ from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
-from database import Base, SessionLocal, engine, settings
-from routers import analytics, auth, bookings, notifications, payments, rooms
+from database import Base, SessionLocal, engine, settings, validate_runtime_configuration
+from routers import analytics, auth, bookings, notifications, ops, payments, rooms
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,7 @@ app = FastAPI(
 def startup_checks():
     """Verify database connectivity and schema readiness at startup."""
     try:
+        validate_runtime_configuration(settings)
         with engine.begin() as connection:
             connection.execute(text("SELECT 1"))
             existing_tables = set(inspect(connection).get_table_names())
@@ -44,7 +45,7 @@ def startup_checks():
                 )
 
         logger.info("Database connection established.")
-    except SQLAlchemyError as exc:
+    except (SQLAlchemyError, RuntimeError) as exc:
         logger.exception("Database initialization failed during startup: %s", exc)
 
 
@@ -73,6 +74,7 @@ app.include_router(payments.router)
 app.include_router(analytics.router)
 app.include_router(auth.router)
 app.include_router(notifications.router)
+app.include_router(ops.router)
 
 
 @app.get("/", tags=["Health"])

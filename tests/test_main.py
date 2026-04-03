@@ -95,6 +95,15 @@ def test_startup_checks_handles_database_error():
     logger_exception.assert_called_once()
 
 
+def test_startup_checks_handles_runtime_configuration_error():
+    with patch.object(
+        main, "validate_runtime_configuration", side_effect=RuntimeError("bad secret")
+    ), patch.object(main.logger, "exception") as logger_exception:
+        main.startup_checks()
+
+    logger_exception.assert_called_once()
+
+
 def test_seed_database_when_already_seeded():
     session = MagicMock()
     room_query = MagicMock()

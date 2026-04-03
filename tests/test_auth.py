@@ -142,9 +142,72 @@ def test_admin_only_room_create_and_analytics(client, db_session):
     assert admin_analytics.status_code == 200
 
 
+def test_non_admin_cannot_access_payment_admin_routes(client, db_session):
+    signup = client.post("/auth/signup", json=signup_payload(email="nonadmin@example.com"))
+    headers = auth_header(signup.json()["access_token"])
+
+    reconciliation = client.get("/payments/admin/reconciliation", headers=headers)
+    transactions = client.get("/payments/transactions", headers=headers)
+
+    assert reconciliation.status_code == 403
+    assert transactions.status_code == 403
+
+
 def test_protected_routes_require_valid_access_token(client):
     no_token = client.get("/auth/me")
     wrong_token_type = client.post("/auth/refresh", json={"refresh_token": "not-a-token"})
 
     assert no_token.status_code == 401
     assert wrong_token_type.status_code == 401
+
+
+def test_login_is_rate_limited_after_repeated_failures(client):
+    client.post("/auth/signup", json=signup_payload())
+
+    last_response = None
+    for _ in range(8):
+        last_response = client.post(
+            "/auth/login",
+            json={"email": "athit@example.com", "password": "WrongPass"},
+        )
+
+    limited = client.post(
+        "/auth/login",
+        json={"email": "athit@example.com", "password": "WrongPass"},
+    )
+
+    assert last_response is not None
+    assert last_response.status_code == 401
+    assert limited.status_code == 429
+    assert limited.json()["detail"] == "Too many requests. Please try again later."
+
+
+def test_signup_is_rate_limited_per_email(client):
+    last_response = None
+    for idx in range(5):
+        last_response = client.post(
+            "/auth/signup",
+            json=signup_payload(email="dupe@example.com", full_name=f"User {idx}"),
+        )
+
+    limited = client.post(
+        "/auth/signup",
+        json=signup_payload(email="dupe@example.com", full_name="Blocked User"),
+    )
+
+    assert last_response is not None
+    assert last_response.status_code == 409
+    assert limited.status_code == 429
+
+
+def test_signup_rejects_weak_password(client):
+    response = client.post(
+        "/auth/signup",
+        json={
+            "email": "weak@example.com",
+            "full_name": "Weak User",
+            "password": "weakpass",
+        },
+    )
+
+    assert response.status_code == 422

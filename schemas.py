@@ -1,4 +1,5 @@
-from pydantic import BaseModel, EmailStr
+import re
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, List
 from datetime import date, datetime
 from enum import Enum
@@ -81,6 +82,29 @@ class RoomCreate(RoomBase):
     pass
 
 
+class RoomUpdate(BaseModel):
+    hotel_name: Optional[str] = None
+    room_type: Optional[RoomType] = None
+    description: Optional[str] = None
+    price: Optional[float] = None
+    original_price: Optional[float] = None
+    availability: Optional[bool] = None
+    rating: Optional[float] = None
+    review_count: Optional[int] = None
+    image_url: Optional[str] = None
+    gallery_urls: Optional[str] = None
+    amenities: Optional[str] = None
+    location: Optional[str] = None
+    city: Optional[str] = None
+    country: Optional[str] = None
+    max_guests: Optional[int] = None
+    beds: Optional[int] = None
+    bathrooms: Optional[int] = None
+    size_sqft: Optional[int] = None
+    floor: Optional[int] = None
+    is_featured: Optional[bool] = None
+
+
 class RoomResponse(RoomBase):
     id: int
     created_at: datetime
@@ -112,14 +136,24 @@ class DestinationListResponse(BaseModel):
 # ─── Booking Schemas ──────────────────────────────────────────────────────────
 
 class BookingCreate(BaseModel):
-    user_name: str
+    user_name: str = Field(min_length=2, max_length=100)
     email: EmailStr
     phone: Optional[str] = None
-    room_id: int
+    room_id: int = Field(gt=0)
     check_in: datetime
     check_out: datetime
-    guests: int = 1
-    special_requests: Optional[str] = None
+    guests: int = Field(default=1, ge=1, le=10)
+    special_requests: Optional[str] = Field(default=None, max_length=500)
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: Optional[str]) -> Optional[str]:
+        if value is None or value == "":
+            return value
+        cleaned = value.strip()
+        if not re.fullmatch(r"[0-9+\-\s()]{7,20}", cleaned):
+            raise ValueError("Phone number format is invalid")
+        return cleaned
 
 
 class BookingResponse(BaseModel):
@@ -156,18 +190,50 @@ class BookingListResponse(BaseModel):
 # ─── Payment Schemas ──────────────────────────────────────────────────────────
 
 class CreatePaymentIntent(BaseModel):
-    booking_id: int
+    booking_id: int = Field(gt=0)
     payment_method: str = "card"  # card | mock
-    idempotency_key: Optional[str] = None
+    idempotency_key: Optional[str] = Field(default=None, min_length=8, max_length=100)
+
+    @field_validator("payment_method")
+    @classmethod
+    def validate_payment_method(cls, value: str) -> str:
+        if value not in {"card", "mock"}:
+            raise ValueError("Payment method must be card or mock")
+        return value
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def validate_idempotency_key(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        if not re.fullmatch(r"[A-Za-z0-9_-]{8,100}", value):
+            raise ValueError("Idempotency key may only contain letters, numbers, hyphens, and underscores")
+        return value
 
 
 class PaymentSuccess(BaseModel):
-    booking_id: int
+    booking_id: int = Field(gt=0)
     payment_intent_id: Optional[str] = None
-    transaction_ref: str
+    transaction_ref: str = Field(min_length=6, max_length=100)
     payment_method: str
-    card_last4: Optional[str] = None
-    card_brand: Optional[str] = None
+    card_last4: Optional[str] = Field(default=None, min_length=4, max_length=4)
+    card_brand: Optional[str] = Field(default=None, max_length=20)
+
+    @field_validator("payment_method")
+    @classmethod
+    def validate_success_payment_method(cls, value: str) -> str:
+        if value not in {"card", "mock"}:
+            raise ValueError("Payment method must be card or mock")
+        return value
+
+    @field_validator("card_last4")
+    @classmethod
+    def validate_card_last4(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        if not re.fullmatch(r"\d{4}", value):
+            raise ValueError("Card last4 must be exactly 4 digits")
+        return value
 
 
 class TransactionResponse(BaseModel):
@@ -201,6 +267,19 @@ class PaymentStateResponse(BaseModel):
     booking_status: BookingStatus
     payment_status: PaymentStatus
     latest_transaction: Optional[TransactionResponse] = None
+
+
+class RefundRequest(BaseModel):
+    booking_id: int = Field(gt=0)
+    reason: str = Field(default="Refund approved by admin", min_length=5, max_length=255)
+
+
+class BookingDashboardResponse(BaseModel):
+    bookings: List[BookingResponse]
+    total: int
+    pending_count: int
+    confirmed_count: int
+    failed_payment_count: int
 
 
 # ─── Analytics Schemas ────────────────────────────────────────────────────────
@@ -250,13 +329,25 @@ class AnalyticsResponse(BaseModel):
 
 class UserSignup(BaseModel):
     email: EmailStr
-    full_name: str
-    password: str
+    full_name: str = Field(min_length=2, max_length=100)
+    password: str = Field(min_length=10, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_strength(cls, value: str) -> str:
+        has_upper = any(char.isupper() for char in value)
+        has_lower = any(char.islower() for char in value)
+        has_digit = any(char.isdigit() for char in value)
+        if not (has_upper and has_lower and has_digit):
+            raise ValueError(
+                "Password must include uppercase, lowercase, and numeric characters"
+            )
+        return value
 
 
 class UserLogin(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(min_length=1, max_length=128)
 
 
 class UserResponse(BaseModel):
@@ -307,6 +398,39 @@ class ProcessNotificationsResponse(BaseModel):
     processed: int
     sent: int
     failed: int
+
+
+class MaintenanceRunResponse(BaseModel):
+    reconciled_payments: int
+    processed_notifications: int
+    sent_notifications: int
+    failed_notifications: int
+
+
+class ReadinessResponse(BaseModel):
+    status: str
+    service: str
+    database: str
+    pending_notifications: int
+    processing_payments: int
+
+
+class AuditLogResponse(BaseModel):
+    id: int
+    actor_user_id: Optional[int] = None
+    action: str
+    entity_type: str
+    entity_id: str
+    metadata_json: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AuditLogListResponse(BaseModel):
+    logs: List[AuditLogResponse]
+    total: int
 
 
 class InventoryUpdateRequest(BaseModel):

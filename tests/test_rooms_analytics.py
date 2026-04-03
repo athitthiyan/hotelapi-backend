@@ -191,6 +191,48 @@ def test_get_destinations_returns_ranked_destination_summaries(client, db_sessio
     assert body["destinations"][0]["room_count"] == 2
 
 
+def test_delete_room_with_bookings_is_blocked(client, db_session):
+    room = create_room(db_session, hotel_name="Booked Room")
+    admin = models.User(
+        email="admin-delete@example.com",
+        full_name="Admin Delete",
+        hashed_password=hash_password("AdminPass123"),
+        is_admin=True,
+        is_active=True,
+    )
+    db_session.add(admin)
+    db_session.commit()
+    login = client.post(
+        "/auth/login",
+        json={"email": "admin-delete@example.com", "password": "AdminPass123"},
+    )
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    booking = models.Booking(
+        booking_ref="BKDELETE1",
+        user_name="Booker",
+        email="booker@example.com",
+        room_id=room.id,
+        check_in=datetime.now(timezone.utc),
+        check_out=datetime.now(timezone.utc) + timedelta(days=2),
+        guests=2,
+        nights=2,
+        room_rate=room.price * 2,
+        taxes=10,
+        service_fee=5,
+        total_amount=room.price * 2 + 15,
+        status=models.BookingStatus.CONFIRMED,
+        payment_status=models.PaymentStatus.PAID,
+    )
+    db_session.add(booking)
+    db_session.commit()
+
+    response = client.delete(f"/rooms/{room.id}", headers=headers)
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Cannot delete a room with existing bookings"
+
+
 def test_get_featured_get_room_and_create_room(client, db_session):
     featured = create_room(db_session, hotel_name="Featured", is_featured=True)
     admin = models.User(
@@ -243,6 +285,28 @@ def test_get_featured_get_room_and_create_room(client, db_session):
     assert room_response.json()["hotel_name"] == "Featured"
     assert create_response.status_code == 201
     assert create_response.json()["hotel_name"] == "Created Room"
+
+    update_response = client.patch(
+        f"/rooms/{featured.id}",
+        headers=headers,
+        json={"price": 333, "is_featured": False},
+    )
+    delete_with_booking_block = client.delete(f"/rooms/{featured.id}", headers=headers)
+    delete_created_room = client.delete(f"/rooms/{create_response.json()['id']}", headers=headers)
+
+    assert update_response.status_code == 200
+    assert update_response.json()["price"] == 333
+    assert delete_with_booking_block.status_code == 200
+    assert delete_created_room.status_code == 200
+    assert delete_created_room.json()["message"] == "Room deleted successfully"
+
+    audit_logs = client.get("/ops/audit-logs", headers=headers)
+    actions = {item["action"] for item in audit_logs.json()["logs"]}
+
+    assert audit_logs.status_code == 200
+    assert "room.create" in actions
+    assert "room.update" in actions
+    assert "room.delete" in actions
 
 
 def test_get_room_not_found(client):

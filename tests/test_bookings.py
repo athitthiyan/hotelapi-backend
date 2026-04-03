@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 import models
+from routers.auth import hash_password
 
 
 def booking_payload(room_id: int, **overrides):
@@ -16,6 +17,23 @@ def booking_payload(room_id: int, **overrides):
     }
     payload.update(overrides)
     return payload
+
+
+def admin_headers(client, db_session):
+    admin = models.User(
+        email="admin-bookings@example.com",
+        full_name="Admin Bookings",
+        hashed_password=hash_password("AdminPass123"),
+        is_admin=True,
+        is_active=True,
+    )
+    db_session.add(admin)
+    db_session.commit()
+    login = client.post(
+        "/auth/login",
+        json={"email": "admin-bookings@example.com", "password": "AdminPass123"},
+    )
+    return {"Authorization": f"Bearer {login.json()['access_token']}"}
 
 
 def test_create_booking_room_not_found(client):
@@ -225,3 +243,55 @@ def test_cancelling_booking_releases_inventory_lock(client, create_booking, db_s
     assert inventory_rows
     assert all(row.locked_units == 0 for row in inventory_rows)
     assert all(row.locked_by_booking_id is None for row in inventory_rows)
+
+
+def test_admin_booking_dashboard_filters_and_counts(client, create_booking, db_session):
+    headers = admin_headers(client, db_session)
+    first = create_booking()
+    second = client.post(
+        "/bookings",
+        json=booking_payload(
+            first["room_id"],
+            email="other@example.com",
+            check_in=(datetime.now(timezone.utc) + timedelta(days=4)).isoformat(),
+            check_out=(datetime.now(timezone.utc) + timedelta(days=6)).isoformat(),
+        ),
+    )
+    first_row = db_session.query(models.Booking).filter_by(id=first["id"]).first()
+    second_row = db_session.query(models.Booking).filter_by(id=second.json()["id"]).first()
+    first_row.status = models.BookingStatus.CONFIRMED
+    first_row.payment_status = models.PaymentStatus.PAID
+    second_row.payment_status = models.PaymentStatus.FAILED
+    db_session.commit()
+
+    response = client.get(
+        "/bookings/admin/dashboard",
+        headers=headers,
+        params={"payment_status": "failed"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["bookings"][0]["email"] == "other@example.com"
+    assert body["pending_count"] >= 0
+    assert body["confirmed_count"] >= 1
+    assert body["failed_payment_count"] >= 1
+
+
+def test_booking_creation_rejects_invalid_phone_number(client, room_id):
+    response = client.post(
+        "/bookings",
+        json={
+            "user_name": "Athit",
+            "email": "athit@example.com",
+            "phone": "abc-not-valid",
+            "room_id": room_id,
+            "check_in": datetime.now(timezone.utc).isoformat(),
+            "check_out": (datetime.now(timezone.utc) + timedelta(days=2)).isoformat(),
+            "guests": 2,
+            "special_requests": "",
+        },
+    )
+
+    assert response.status_code == 422

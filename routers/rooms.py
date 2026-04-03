@@ -6,6 +6,7 @@ from datetime import datetime
 import models, schemas
 from database import get_db
 from routers.auth import get_current_admin
+from services.audit_service import write_audit_log
 from services.inventory_service import is_inventory_available, upsert_inventory_range
 from services.search_service import (
     clear_search_cache,
@@ -165,21 +166,88 @@ def get_room(room_id: int, db: Session = Depends(get_db)):
 def create_room(
     room: schemas.RoomCreate,
     db: Session = Depends(get_db),
-    _admin: models.User = Depends(get_current_admin),
+    admin: models.User = Depends(get_current_admin),
 ):
     db_room = models.Room(**room.model_dump())
     db.add(db_room)
+    db.flush()
+    write_audit_log(
+        db,
+        actor_user_id=admin.id,
+        action="room.create",
+        entity_type="room",
+        entity_id=db_room.id,
+        metadata={"hotel_name": db_room.hotel_name, "city": db_room.city},
+    )
     db.commit()
     db.refresh(db_room)
     clear_search_cache()
     return db_room
 
 
+@router.patch("/{room_id}", response_model=schemas.RoomResponse)
+def update_room(
+    room_id: int,
+    payload: schemas.RoomUpdate,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    room = db.query(models.Room).filter(models.Room.id == room_id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+
+    updates = payload.model_dump(exclude_unset=True)
+    for field, value in updates.items():
+        setattr(room, field, value)
+    write_audit_log(
+        db,
+        actor_user_id=admin.id,
+        action="room.update",
+        entity_type="room",
+        entity_id=room.id,
+        metadata={"updated_fields": sorted(updates.keys())},
+    )
+    db.commit()
+    db.refresh(room)
+    clear_search_cache()
+    return room
+
+
+@router.delete("/{room_id}")
+def delete_room(
+    room_id: int,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    room = db.query(models.Room).filter(models.Room.id == room_id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+    if db.query(models.Booking).filter(models.Booking.room_id == room_id).count() > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete a room with existing bookings",
+        )
+
+    db.query(models.RoomInventory).filter(models.RoomInventory.room_id == room_id).delete()
+    write_audit_log(
+        db,
+        actor_user_id=admin.id,
+        action="room.delete",
+        entity_type="room",
+        entity_id=room.id,
+        metadata={"hotel_name": room.hotel_name},
+    )
+    db.delete(room)
+    db.commit()
+    clear_search_cache()
+    return {"message": "Room deleted successfully"}
+
+
 @router.post("/inventory", response_model=schemas.InventoryListResponse)
 def update_room_inventory(
     payload: schemas.InventoryUpdateRequest,
     db: Session = Depends(get_db),
-    _admin: models.User = Depends(get_current_admin),
+    admin: models.User = Depends(get_current_admin),
 ):
     room = db.query(models.Room).filter(models.Room.id == payload.room_id).first()
     if not room:
@@ -199,6 +267,20 @@ def update_room_inventory(
         total_units=payload.total_units,
         available_units=payload.available_units,
         status=models.InventoryStatus(payload.status.value),
+    )
+    write_audit_log(
+        db,
+        actor_user_id=admin.id,
+        action="inventory.update",
+        entity_type="room",
+        entity_id=payload.room_id,
+        metadata={
+            "start_date": payload.start_date.isoformat(),
+            "end_date": payload.end_date.isoformat(),
+            "total_units": payload.total_units,
+            "available_units": payload.available_units,
+            "status": payload.status.value,
+        },
     )
     clear_search_cache()
     return {"inventory": rows, "total": len(rows)}
