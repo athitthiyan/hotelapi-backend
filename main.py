@@ -37,11 +37,19 @@ def startup_checks():
         logger.exception("Database initialization failed during startup: %s", exc)
 
 
-origins = [origin.strip() for origin in settings.allowed_origins.split(",") if origin.strip()]
+# Always-allowed production origins (code-level guarantee, not reliant on env var)
+_HARDCODED_ORIGINS = [
+    "https://stayease-booking-app.vercel.app",
+    "https://payflow-gateway.vercel.app",
+    "https://insightboard-admin.vercel.app",
+]
+_env_origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
+origins = list(set(_env_origins + _HARDCODED_ORIGINS))
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",  # covers all Vercel preview URLs too
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
