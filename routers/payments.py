@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 import models
 import schemas
 from database import get_db, settings
+from routers.bookings import expire_stale_booking_hold, release_expired_holds
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
@@ -196,8 +197,13 @@ def create_payment_intent(
     db: Session = Depends(get_db),
 ):
     booking = get_booking_or_404(db, payload.booking_id)
+    release_expired_holds(db, booking_id=booking.id)
+    db.refresh(booking)
+    if expire_stale_booking_hold(booking):
+        db.commit()
+        db.refresh(booking)
     if booking.status == models.BookingStatus.CANCELLED:
-        raise HTTPException(status_code=400, detail="Cancelled bookings cannot be paid")
+        raise HTTPException(status_code=400, detail="Cancelled or expired bookings cannot be paid")
     if booking.payment_status == models.PaymentStatus.PAID:
         raise HTTPException(status_code=409, detail="Booking already paid")
     if get_success_transaction_for_booking(db, booking.id):
@@ -243,8 +249,13 @@ def confirm_payment_success(
     db: Session = Depends(get_db),
 ):
     booking = get_booking_or_404(db, payload.booking_id)
+    release_expired_holds(db, booking_id=booking.id)
+    db.refresh(booking)
+    if expire_stale_booking_hold(booking):
+        db.commit()
+        db.refresh(booking)
     if booking.status == models.BookingStatus.CANCELLED:
-        raise HTTPException(status_code=400, detail="Cancelled bookings cannot be paid")
+        raise HTTPException(status_code=400, detail="Cancelled or expired bookings cannot be paid")
 
     transaction = upsert_success_transaction(
         db=db,
@@ -266,6 +277,12 @@ def record_payment_failure(
     db: Session = Depends(get_db),
 ):
     booking = get_booking_or_404(db, booking_id)
+    release_expired_holds(db, booking_id=booking.id)
+    db.refresh(booking)
+    if expire_stale_booking_hold(booking):
+        db.commit()
+        db.refresh(booking)
+        raise HTTPException(status_code=400, detail="Cancelled or expired bookings cannot be updated")
     transaction = record_failed_transaction(
         db=db,
         booking=booking,
@@ -278,6 +295,9 @@ def record_payment_failure(
 @router.get("/status/{booking_id}", response_model=schemas.PaymentStateResponse)
 def get_payment_status(booking_id: int, db: Session = Depends(get_db)):
     booking = get_booking_or_404(db, booking_id)
+    if expire_stale_booking_hold(booking):
+        db.commit()
+        db.refresh(booking)
     latest_transaction = get_latest_transaction_for_booking(db, booking_id)
     return schemas.PaymentStateResponse(
         booking_id=booking.id,

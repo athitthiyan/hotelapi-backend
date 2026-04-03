@@ -85,6 +85,7 @@ class Booking(Base):
     room_id = Column(Integer, ForeignKey("rooms.id"), nullable=False)
     check_in = Column(DateTime(timezone=True), nullable=False)
     check_out = Column(DateTime(timezone=True), nullable=False)
+    hold_expires_at = Column(DateTime(timezone=True))
     guests = Column(Integer, default=1)
     nights = Column(Integer, nullable=False)
     room_rate = Column(Float, nullable=False)

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, validator
+from pydantic import BaseModel, EmailStr
 from typing import Optional, List
 from datetime import datetime
 from enum import Enum
@@ -101,6 +101,7 @@ class BookingResponse(BaseModel):
     room: Optional[RoomResponse] = None
     check_in: datetime
     check_out: datetime
+    hold_expires_at: Optional[datetime] = None
     guests: int
     nights: int
     room_rate: float

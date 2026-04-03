@@ -4,7 +4,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from database import Base, SessionLocal, engine, settings
@@ -23,16 +23,27 @@ app = FastAPI(
 
 @app.on_event("startup")
 def startup_checks():
-    """Initialize database objects after the app is created.
-
-    Avoiding database work at import time prevents platform boot failures when
-    the database is temporarily unavailable or misconfigured.
-    """
+    """Verify database connectivity and schema readiness at startup."""
     try:
         with engine.begin() as connection:
             connection.execute(text("SELECT 1"))
-            Base.metadata.create_all(bind=connection)
-        logger.info("Database connection established and tables verified.")
+            existing_tables = set(inspect(connection).get_table_names())
+            required_tables = set(Base.metadata.tables.keys())
+            missing_tables = sorted(required_tables - existing_tables)
+
+            if missing_tables and settings.auto_create_schema:
+                Base.metadata.create_all(bind=connection)
+                logger.warning(
+                    "AUTO_CREATE_SCHEMA enabled; created missing tables: %s",
+                    ", ".join(missing_tables),
+                )
+            elif missing_tables:
+                logger.warning(
+                    "Database schema is missing tables: %s. Run Alembic migrations before serving production traffic.",
+                    ", ".join(missing_tables),
+                )
+
+        logger.info("Database connection established.")
     except SQLAlchemyError as exc:
         logger.exception("Database initialization failed during startup: %s", exc)
 

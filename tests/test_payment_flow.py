@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from unittest.mock import patch
 
 import models
@@ -160,3 +162,20 @@ def test_webhook_failure_marks_booking_failed(client, create_booking, db_session
     assert txns[0].status == models.TransactionStatus.FAILED
     assert txns[0].failure_reason == "Insufficient funds"
     assert booking_row.payment_status == models.PaymentStatus.FAILED
+
+
+def test_create_payment_intent_blocks_expired_hold(client, create_booking, db_session):
+    booking = create_booking()
+    booking_row = db_session.query(models.Booking).filter_by(id=booking["id"]).first()
+    booking_row.hold_expires_at = booking_row.created_at - timedelta(minutes=1)
+    db_session.commit()
+
+    response = client.post(
+        "/payments/create-payment-intent",
+        json={"booking_id": booking["id"], "payment_method": "mock"},
+    )
+
+    db_session.refresh(booking_row)
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Cancelled or expired bookings cannot be paid"
+    assert booking_row.status == models.BookingStatus.CANCELLED

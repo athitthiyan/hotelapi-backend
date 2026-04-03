@@ -1,22 +1,60 @@
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from pydantic_settings import BaseSettings
 from functools import lru_cache
+
+from pydantic import AliasChoices, Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy import create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 
 class Settings(BaseSettings):
-    database_url: str
-    supabase_url: str = ""
-    supabase_service_key: str = ""
-    stripe_secret_key: str = ""
-    stripe_publishable_key: str = ""
-    stripe_webhook_secret: str = ""
-    secret_key: str = "change-this-in-production"
-    allowed_origins: str = "http://localhost:4200,https://stayease-booking-app.vercel.app,https://payflow-payment-app.vercel.app,https://insightboard-admin.vercel.app"
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    class Config:
-        env_file = ".env"
+    database_url: str = Field(
+        validation_alias=AliasChoices("DATABASE_URL", "database_url")
+    )
+    supabase_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("SUPABASE_URL", "supabase_url"),
+    )
+    supabase_service_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("SUPABASE_SERVICE_KEY", "supabase_service_key"),
+    )
+    stripe_secret_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("STRIPE_SECRET_KEY", "stripe_secret_key"),
+    )
+    stripe_publishable_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "STRIPE_PUBLISHABLE_KEY", "stripe_publishable_key"
+        ),
+    )
+    stripe_webhook_secret: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "STRIPE_WEBHOOK_SECRET", "stripe_webhook_secret"
+        ),
+    )
+    secret_key: str = Field(
+        default="change-this-in-production",
+        validation_alias=AliasChoices("SECRET_KEY", "secret_key"),
+    )
+    allowed_origins: str = Field(
+        default="http://localhost:4200,https://stayease-booking-app.vercel.app,https://payflow-payment-app.vercel.app,https://insightboard-admin.vercel.app",
+        validation_alias=AliasChoices("ALLOWED_ORIGINS", "allowed_origins"),
+    )
+    auto_create_schema: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("AUTO_CREATE_SCHEMA", "auto_create_schema"),
+    )
+
+    @field_validator("database_url")
+    @classmethod
+    def normalize_database_url(cls, value: str) -> str:
+        if value.startswith("postgres://"):
+            return value.replace("postgres://", "postgresql://", 1)
+        return value
 
 
 @lru_cache()
