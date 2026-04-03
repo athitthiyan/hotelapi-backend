@@ -15,4 +15,4 @@ services:
       - key: SECRET_KEY
         generateValue: true
       - key: ALLOWED_ORIGINS
-        value: https://stayease-booking-app.vercel.app,https://payflow-gateway.vercel.app,https://insightboard-admin.vercel.app
+        value: https://stayease-booking-app.vercel.app,https://payflow-payment-app.vercel.app,https://insightboard-admin.vercel.app

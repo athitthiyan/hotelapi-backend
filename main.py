@@ -40,7 +40,7 @@ def startup_checks():
 # Always-allowed production origins (code-level guarantee, not reliant on env var)
 _HARDCODED_ORIGINS = [
     "https://stayease-booking-app.vercel.app",
-    "https://payflow-gateway.vercel.app",
+    "https://payflow-payment-app.vercel.app",
     "https://insightboard-admin.vercel.app",
 ]
 _env_origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]

@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     stripe_publishable_key: str = ""
     stripe_webhook_secret: str = ""
     secret_key: str = "change-this-in-production"
-    allowed_origins: str = "http://localhost:4200,https://stayease-booking-app.vercel.app,https://payflow-gateway.vercel.app,https://insightboard-admin.vercel.app"
+    allowed_origins: str = "http://localhost:4200,https://stayease-booking-app.vercel.app,https://payflow-payment-app.vercel.app,https://insightboard-admin.vercel.app"
 
     class Config:
         env_file = ".env"
