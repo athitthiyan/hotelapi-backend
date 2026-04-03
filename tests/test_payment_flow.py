@@ -335,11 +335,17 @@ def test_reconciliation_expires_stale_processing_payment(client, create_booking,
 
     db_session.refresh(txn)
     booking_row = db_session.query(models.Booking).filter_by(id=booking["id"]).first()
+    inventory_rows = (
+        db_session.query(models.RoomInventory)
+        .filter(models.RoomInventory.room_id == booking["room_id"])
+        .all()
+    )
     assert reconcile.status_code == 200
     assert reconcile.json()["updated"] == 1
     assert txn.status == models.TransactionStatus.EXPIRED
     assert booking_row.payment_status == models.PaymentStatus.EXPIRED
     assert booking_row.status == models.BookingStatus.EXPIRED
+    assert all(row.locked_units == 0 for row in inventory_rows)
 
 
 def test_create_payment_intent_blocks_expired_hold(client, create_booking, db_session):

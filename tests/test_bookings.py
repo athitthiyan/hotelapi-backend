@@ -134,6 +134,22 @@ def test_create_booking_sets_hold_expiry(client, room_id):
     assert body["hold_expires_at"] is not None
 
 
+def test_create_booking_locks_inventory_for_each_stay_date(client, db_session, room_id):
+    response = client.post("/bookings", json=booking_payload(room_id))
+    booking = db_session.query(models.Booking).filter_by(id=response.json()["id"]).first()
+
+    inventory_rows = (
+        db_session.query(models.RoomInventory)
+        .filter(models.RoomInventory.locked_by_booking_id == booking.id)
+        .order_by(models.RoomInventory.inventory_date.asc())
+        .all()
+    )
+
+    assert response.status_code == 201
+    assert len(inventory_rows) == 2
+    assert all(row.locked_units == 1 for row in inventory_rows)
+
+
 def test_create_booking_blocks_overlapping_active_reservations(client, create_booking, room_id):
     first = create_booking()
 
@@ -194,3 +210,18 @@ def test_cancel_paid_booking_requires_refund_workflow(client, create_booking, db
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Paid bookings must use the refund or support workflow"
+
+
+def test_cancelling_booking_releases_inventory_lock(client, create_booking, db_session):
+    created = create_booking()
+    response = client.patch(f"/bookings/{created['id']}/cancel")
+    inventory_rows = (
+        db_session.query(models.RoomInventory)
+        .filter(models.RoomInventory.room_id == created["room_id"])
+        .all()
+    )
+
+    assert response.status_code == 200
+    assert inventory_rows
+    assert all(row.locked_units == 0 for row in inventory_rows)
+    assert all(row.locked_by_booking_id is None for row in inventory_rows)

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, Enum
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, Enum, Date
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -41,6 +41,18 @@ class TransactionStatus(str, enum.Enum):
     FAILED = "failed"
     REFUNDED = "refunded"
     EXPIRED = "expired"
+
+
+class NotificationStatus(str, enum.Enum):
+    PENDING = "pending"
+    SENT = "sent"
+    FAILED = "failed"
+
+
+class InventoryStatus(str, enum.Enum):
+    AVAILABLE = "available"
+    LOCKED = "locked"
+    BLOCKED = "blocked"
 
 
 class User(Base):
@@ -164,3 +176,50 @@ class Transaction(Base):
 
     booking = relationship("Booking", back_populates="transactions")
     retry_of_transaction = relationship("Transaction", remote_side=[id])
+
+
+class NotificationOutbox(Base):
+    __tablename__ = "notification_outbox"
+
+    id = Column(Integer, primary_key=True, index=True)
+    booking_id = Column(Integer, ForeignKey("bookings.id"))
+    transaction_id = Column(Integer, ForeignKey("transactions.id"))
+    event_type = Column(String(100), nullable=False, index=True)
+    recipient_email = Column(String(200), nullable=False, index=True)
+    subject = Column(String(255), nullable=False)
+    body = Column(Text, nullable=False)
+    status = Column(
+        Enum(
+            NotificationStatus,
+            name="notification_status",
+            values_callable=enum_values,
+        ),
+        default=NotificationStatus.PENDING,
+    )
+    failure_reason = Column(String(500))
+    sent_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class RoomInventory(Base):
+    __tablename__ = "room_inventory"
+
+    id = Column(Integer, primary_key=True, index=True)
+    room_id = Column(Integer, ForeignKey("rooms.id"), nullable=False, index=True)
+    inventory_date = Column(Date, nullable=False, index=True)
+    total_units = Column(Integer, default=1, nullable=False)
+    available_units = Column(Integer, default=1, nullable=False)
+    locked_units = Column(Integer, default=0, nullable=False)
+    status = Column(
+        Enum(
+            InventoryStatus,
+            name="inventory_status",
+            values_callable=enum_values,
+        ),
+        default=InventoryStatus.AVAILABLE,
+    )
+    locked_by_booking_id = Column(Integer, ForeignKey("bookings.id"))
+    lock_expires_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())

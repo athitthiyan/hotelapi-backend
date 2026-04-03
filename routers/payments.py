@@ -11,6 +11,12 @@ import models
 import schemas
 from database import get_db, settings
 from routers.bookings import expire_stale_booking_hold, release_expired_holds
+from services.inventory_service import confirm_inventory_for_booking, release_inventory_for_booking
+from services.notification_service import (
+    queue_booking_confirmation_email,
+    queue_payment_failure_email,
+    queue_payment_receipt_email,
+)
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
@@ -252,6 +258,10 @@ def upsert_success_transaction(
     transaction.failure_reason = None
 
     apply_paid_state(booking)
+    confirm_inventory_for_booking(db, booking=booking)
+    db.flush()
+    queue_booking_confirmation_email(db, booking, transaction)
+    queue_payment_receipt_email(db, booking, transaction)
 
     db.commit()
     db.refresh(transaction)
@@ -334,6 +344,9 @@ def record_failed_transaction(
     transaction.failure_reason = reason
 
     apply_failed_state(booking)
+    release_inventory_for_booking(db, booking=booking)
+    db.flush()
+    queue_payment_failure_email(db, booking, transaction, reason)
 
     db.commit()
     db.refresh(transaction)
@@ -367,6 +380,7 @@ def reconcile_stuck_payments(
         transaction.status = models.TransactionStatus.EXPIRED
         transaction.failure_reason = "Payment attempt expired before confirmation"
         apply_expired_state(booking)
+        release_inventory_for_booking(db, booking=booking)
         updated += 1
 
     if updated:

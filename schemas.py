@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 
 
@@ -38,6 +38,18 @@ class TransactionStatus(str, Enum):
     FAILED = "failed"
     REFUNDED = "refunded"
     EXPIRED = "expired"
+
+
+class NotificationStatus(str, Enum):
+    PENDING = "pending"
+    SENT = "sent"
+    FAILED = "failed"
+
+
+class InventoryStatus(str, Enum):
+    AVAILABLE = "available"
+    LOCKED = "locked"
+    BLOCKED = "blocked"
 
 
 # ─── Room Schemas ─────────────────────────────────────────────────────────────
@@ -82,6 +94,19 @@ class RoomListResponse(BaseModel):
     total: int
     page: int
     per_page: int
+
+
+class DestinationResponse(BaseModel):
+    city: str
+    country: Optional[str] = None
+    room_count: int
+    featured_count: int
+    average_price: float
+
+
+class DestinationListResponse(BaseModel):
+    destinations: List[DestinationResponse]
+    total: int
 
 
 # ─── Booking Schemas ──────────────────────────────────────────────────────────
@@ -254,3 +279,60 @@ class TokenResponse(BaseModel):
 
 class RefreshTokenRequest(BaseModel):
     refresh_token: str
+
+
+class NotificationOutboxResponse(BaseModel):
+    id: int
+    booking_id: Optional[int] = None
+    transaction_id: Optional[int] = None
+    event_type: str
+    recipient_email: str
+    subject: str
+    body: str
+    status: NotificationStatus
+    failure_reason: Optional[str] = None
+    sent_at: Optional[datetime] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class NotificationListResponse(BaseModel):
+    notifications: List[NotificationOutboxResponse]
+    total: int
+
+
+class ProcessNotificationsResponse(BaseModel):
+    processed: int
+    sent: int
+    failed: int
+
+
+class InventoryUpdateRequest(BaseModel):
+    room_id: int
+    start_date: date
+    end_date: date
+    total_units: int
+    available_units: Optional[int] = None
+    status: InventoryStatus = InventoryStatus.AVAILABLE
+
+
+class InventoryResponse(BaseModel):
+    id: int
+    room_id: int
+    inventory_date: date
+    total_units: int
+    available_units: int
+    locked_units: int
+    status: InventoryStatus
+    locked_by_booking_id: Optional[int] = None
+    lock_expires_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class InventoryListResponse(BaseModel):
+    inventory: List[InventoryResponse]
+    total: int

@@ -85,6 +85,112 @@ def test_get_rooms_filters_and_pagination(client, db_session):
     assert body["rooms"][0]["hotel_name"] == "Hotel A"
 
 
+def test_get_rooms_supports_sorting_and_text_query(client, db_session):
+    create_room(
+        db_session,
+        hotel_name="Budget Paris Stay",
+        city="Paris",
+        price=120,
+        rating=4.2,
+        review_count=50,
+        is_featured=False,
+    )
+    create_room(
+        db_session,
+        hotel_name="Luxury Paris Palace",
+        city="Paris",
+        price=450,
+        rating=4.9,
+        review_count=400,
+        is_featured=True,
+    )
+    create_room(
+        db_session,
+        hotel_name="Paris Business Hub",
+        city="Paris",
+        price=220,
+        rating=4.6,
+        review_count=180,
+        is_featured=False,
+    )
+
+    recommended = client.get("/rooms", params={"query": "Paris", "sort_by": "recommended"})
+    price_asc = client.get("/rooms", params={"query": "Paris", "sort_by": "price_asc"})
+    rating_desc = client.get("/rooms", params={"query": "Paris", "sort_by": "rating_desc"})
+
+    assert recommended.status_code == 200
+    assert price_asc.status_code == 200
+    assert rating_desc.status_code == 200
+    assert recommended.json()["total"] == 3
+    assert recommended.json()["rooms"][0]["hotel_name"] == "Luxury Paris Palace"
+    assert price_asc.json()["rooms"][0]["hotel_name"] == "Budget Paris Stay"
+    assert rating_desc.json()["rooms"][0]["hotel_name"] == "Luxury Paris Palace"
+
+
+def test_get_rooms_filters_by_date_inventory_and_admin_inventory_endpoints(client, db_session):
+    room = create_room(db_session, hotel_name="Inventory Room", city="Paris", price=220)
+    admin = models.User(
+        email="admin-inventory@example.com",
+        full_name="Admin Inventory",
+        hashed_password=hash_password("AdminPass123"),
+        is_admin=True,
+        is_active=True,
+    )
+    db_session.add(admin)
+    db_session.commit()
+    login = client.post(
+        "/auth/login",
+        json={"email": "admin-inventory@example.com", "password": "AdminPass123"},
+    )
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    update_inventory = client.post(
+        "/rooms/inventory",
+        headers=headers,
+        json={
+            "room_id": room.id,
+            "start_date": "2026-04-20",
+            "end_date": "2026-04-22",
+            "total_units": 0,
+            "available_units": 0,
+            "status": "blocked",
+        },
+    )
+    filtered = client.get(
+        "/rooms",
+        params={
+            "city": "Paris",
+            "check_in": "2026-04-20T00:00:00+00:00",
+            "check_out": "2026-04-22T00:00:00+00:00",
+        },
+    )
+    inventory_view = client.get(
+        f"/rooms/{room.id}/inventory",
+        headers=headers,
+        params={"start_date": "2026-04-20", "end_date": "2026-04-22"},
+    )
+
+    assert update_inventory.status_code == 200
+    assert filtered.status_code == 200
+    assert filtered.json()["total"] == 0
+    assert inventory_view.status_code == 200
+    assert inventory_view.json()["total"] == 3
+
+
+def test_get_destinations_returns_ranked_destination_summaries(client, db_session):
+    create_room(db_session, hotel_name="Goa Beach One", city="Goa", country="India", price=200, is_featured=True)
+    create_room(db_session, hotel_name="Goa Beach Two", city="Goa", country="India", price=180, is_featured=False)
+    create_room(db_session, hotel_name="Bali Retreat", city="Bali", country="Indonesia", price=260, is_featured=True)
+
+    response = client.get("/rooms/destinations", params={"query": "a", "limit": 10})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] >= 2
+    assert body["destinations"][0]["city"] == "Goa"
+    assert body["destinations"][0]["room_count"] == 2
+
+
 def test_get_featured_get_room_and_create_room(client, db_session):
     featured = create_room(db_session, hotel_name="Featured", is_featured=True)
     admin = models.User(

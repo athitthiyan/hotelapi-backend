@@ -10,6 +10,16 @@ from sqlalchemy.orm import Session, joinedload
 import models
 import schemas
 from database import get_db
+from services.inventory_service import (
+    is_inventory_available,
+    lock_inventory_for_booking,
+    release_expired_inventory_locks,
+    release_inventory_for_booking,
+)
+from services.notification_service import (
+    queue_booking_cancellation_email,
+    queue_booking_hold_email,
+)
 
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
 
@@ -68,17 +78,18 @@ def release_expired_holds(
         models.Booking.status == models.BookingStatus.PENDING,
         models.Booking.payment_status != models.PaymentStatus.PAID,
         models.Booking.hold_expires_at.is_not(None),
-        models.Booking.hold_expires_at <= now,
     )
     if room_id is not None:
         query = query.filter(models.Booking.room_id == room_id)
     if booking_id is not None:
         query = query.filter(models.Booking.id == booking_id)
 
-    expired_bookings = query.all()
-    for booking in expired_bookings:
-        booking.status = models.BookingStatus.EXPIRED
-        booking.payment_status = models.PaymentStatus.EXPIRED
+    candidate_bookings = query.all()
+    expired_bookings = []
+    for booking in candidate_bookings:
+        if expire_stale_booking_hold(booking, now=now):
+            release_inventory_for_booking(db, booking=booking)
+            expired_bookings.append(booking)
 
     if expired_bookings:
         db.commit()
@@ -149,10 +160,18 @@ def create_booking(booking_data: schemas.BookingCreate, db: Session = Depends(ge
         raise HTTPException(status_code=400, detail="Minimum stay is 1 night")
 
     release_expired_holds(db, room_id=booking_data.room_id)
+    release_expired_inventory_locks(db, room_id=booking_data.room_id)
     if has_active_booking_overlap(db, booking_data.room_id, check_in, check_out):
         raise HTTPException(
             status_code=409,
             detail="Room is already reserved for the selected dates",
+        )
+    if not is_inventory_available(
+        db, room_id=booking_data.room_id, check_in=check_in, check_out=check_out
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Inventory is not available for the selected dates",
         )
 
     room_rate, taxes, service_fee, total = calculate_booking_amount(room, nights)
@@ -177,6 +196,17 @@ def create_booking(booking_data: schemas.BookingCreate, db: Session = Depends(ge
         payment_status=models.PaymentStatus.PENDING,
     )
     db.add(db_booking)
+    db.flush()
+    try:
+        lock_inventory_for_booking(
+            db,
+            booking=db_booking,
+            lock_expires_at=db_booking.hold_expires_at,
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc))
+    queue_booking_hold_email(db, db_booking)
     db.commit()
     db.refresh(db_booking)
 
@@ -272,6 +302,8 @@ def cancel_booking(booking_id: int, db: Session = Depends(get_db)):
         )
 
     booking.status = models.BookingStatus.CANCELLED
+    release_inventory_for_booking(db, booking=booking)
+    queue_booking_cancellation_email(db, booking)
     db.commit()
     db.refresh(booking)
     return booking
