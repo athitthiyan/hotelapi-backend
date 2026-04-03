@@ -15,23 +15,29 @@ class RoomType(str, Enum):
 
 class BookingStatus(str, Enum):
     PENDING = "pending"
+    PROCESSING = "processing"
     CONFIRMED = "confirmed"
     CANCELLED = "cancelled"
     COMPLETED = "completed"
+    EXPIRED = "expired"
 
 
 class PaymentStatus(str, Enum):
     PENDING = "pending"
+    PROCESSING = "processing"
     PAID = "paid"
     FAILED = "failed"
     REFUNDED = "refunded"
+    EXPIRED = "expired"
 
 
 class TransactionStatus(str, Enum):
     PENDING = "pending"
+    PROCESSING = "processing"
     SUCCESS = "success"
     FAILED = "failed"
     REFUNDED = "refunded"
+    EXPIRED = "expired"
 
 
 # ─── Room Schemas ─────────────────────────────────────────────────────────────
@@ -127,6 +133,7 @@ class BookingListResponse(BaseModel):
 class CreatePaymentIntent(BaseModel):
     booking_id: int
     payment_method: str = "card"  # card | mock
+    idempotency_key: Optional[str] = None
 
 
 class PaymentSuccess(BaseModel):
@@ -143,6 +150,7 @@ class TransactionResponse(BaseModel):
     booking_id: int
     transaction_ref: str
     stripe_payment_intent_id: Optional[str]
+    idempotency_key: Optional[str]
     amount: float
     currency: str
     payment_method: str

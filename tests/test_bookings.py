@@ -167,7 +167,8 @@ def test_expired_booking_hold_is_released_for_new_reservation(client, create_boo
 
     db_session.refresh(booking)
     assert response.status_code == 201
-    assert booking.status == models.BookingStatus.CANCELLED
+    assert booking.status == models.BookingStatus.EXPIRED
+    assert booking.payment_status == models.PaymentStatus.EXPIRED
 
 
 def test_get_booking_by_ref_expires_stale_holds(client, create_booking, db_session):
@@ -179,7 +180,7 @@ def test_get_booking_by_ref_expires_stale_holds(client, create_booking, db_sessi
     response = client.get(f"/bookings/ref/{created['booking_ref']}")
 
     assert response.status_code == 200
-    assert response.json()["status"] == "cancelled"
+    assert response.json()["status"] == "expired"
 
 
 def test_cancel_paid_booking_requires_refund_workflow(client, create_booking, db_session):

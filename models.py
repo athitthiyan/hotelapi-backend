@@ -18,23 +18,29 @@ class RoomType(str, enum.Enum):
 
 class BookingStatus(str, enum.Enum):
     PENDING = "pending"
+    PROCESSING = "processing"
     CONFIRMED = "confirmed"
     CANCELLED = "cancelled"
     COMPLETED = "completed"
+    EXPIRED = "expired"
 
 
 class PaymentStatus(str, enum.Enum):
     PENDING = "pending"
+    PROCESSING = "processing"
     PAID = "paid"
     FAILED = "failed"
     REFUNDED = "refunded"
+    EXPIRED = "expired"
 
 
 class TransactionStatus(str, enum.Enum):
     PENDING = "pending"
+    PROCESSING = "processing"
     SUCCESS = "success"
     FAILED = "failed"
     REFUNDED = "refunded"
+    EXPIRED = "expired"
 
 
 class Room(Base):
@@ -123,11 +129,14 @@ class Transaction(Base):
     booking_id = Column(Integer, ForeignKey("bookings.id"), nullable=False)
     transaction_ref = Column(String(100), unique=True, index=True)
     stripe_payment_intent_id = Column(String(200), index=True)
+    idempotency_key = Column(String(100), unique=True, index=True)
+    provider_client_secret = Column(Text)
     amount = Column(Float, nullable=False)
     currency = Column(String(10), default="USD")
     payment_method = Column(String(50))  # card, mock
     card_last4 = Column(String(4))
     card_brand = Column(String(20))
+    retry_of_transaction_id = Column(Integer, ForeignKey("transactions.id"))
     status = Column(
         Enum(
             TransactionStatus,
@@ -141,3 +150,4 @@ class Transaction(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     booking = relationship("Booking", back_populates="transactions")
+    retry_of_transaction = relationship("Transaction", remote_side=[id])

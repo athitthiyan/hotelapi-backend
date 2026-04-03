@@ -1,9 +1,10 @@
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session, joinedload
 
 import models
@@ -12,6 +13,12 @@ from database import get_db, settings
 from routers.bookings import expire_stale_booking_hold, release_expired_holds
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
+
+RECONCILIATION_TIMEOUT_MINUTES = 30
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def generate_txn_ref() -> str:
@@ -70,8 +77,8 @@ def get_transaction_by_reference(
     booking_id: int,
     transaction_ref: Optional[str] = None,
     payment_intent_id: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
 ) -> Optional[models.Transaction]:
-    filters = [models.Transaction.booking_id == booking_id]
     reference_filters = []
     if transaction_ref:
         reference_filters.append(models.Transaction.transaction_ref == transaction_ref)
@@ -79,9 +86,60 @@ def get_transaction_by_reference(
         reference_filters.append(
             models.Transaction.stripe_payment_intent_id == payment_intent_id
         )
+    if idempotency_key:
+        reference_filters.append(models.Transaction.idempotency_key == idempotency_key)
     if not reference_filters:
         return None
-    return db.query(models.Transaction).filter(*filters, or_(*reference_filters)).first()
+    return (
+        db.query(models.Transaction)
+        .filter(models.Transaction.booking_id == booking_id, or_(*reference_filters))
+        .first()
+    )
+
+
+def get_active_transaction_for_booking(
+    db: Session, booking_id: int
+) -> Optional[models.Transaction]:
+    return (
+        db.query(models.Transaction)
+        .filter(
+            models.Transaction.booking_id == booking_id,
+            models.Transaction.status.in_(
+                [
+                    models.TransactionStatus.PENDING,
+                    models.TransactionStatus.PROCESSING,
+                ]
+            ),
+        )
+        .order_by(models.Transaction.created_at.desc(), models.Transaction.id.desc())
+        .first()
+    )
+
+
+def ensure_booking_can_accept_payment(db: Session, booking: models.Booking) -> models.Booking:
+    release_expired_holds(db, booking_id=booking.id)
+    db.refresh(booking)
+    if expire_stale_booking_hold(booking):
+        booking.payment_status = models.PaymentStatus.EXPIRED
+        booking.status = models.BookingStatus.EXPIRED
+        db.commit()
+        db.refresh(booking)
+
+    if booking.status in [models.BookingStatus.CANCELLED, models.BookingStatus.EXPIRED]:
+        raise HTTPException(
+            status_code=400, detail="Cancelled or expired bookings cannot be paid"
+        )
+    if booking.payment_status == models.PaymentStatus.PAID:
+        raise HTTPException(status_code=409, detail="Booking already paid")
+    if get_success_transaction_for_booking(db, booking.id):
+        raise HTTPException(status_code=409, detail="Booking already paid")
+    return booking
+
+
+def apply_processing_state(booking: models.Booking) -> None:
+    booking.payment_status = models.PaymentStatus.PROCESSING
+    if booking.status == models.BookingStatus.PENDING:
+        booking.status = models.BookingStatus.PROCESSING
 
 
 def apply_paid_state(booking: models.Booking) -> None:
@@ -92,6 +150,63 @@ def apply_paid_state(booking: models.Booking) -> None:
 def apply_failed_state(booking: models.Booking) -> None:
     if booking.payment_status != models.PaymentStatus.PAID:
         booking.payment_status = models.PaymentStatus.FAILED
+        if booking.status not in [models.BookingStatus.CANCELLED, models.BookingStatus.EXPIRED]:
+            booking.status = models.BookingStatus.PENDING
+
+
+def apply_expired_state(booking: models.Booking) -> None:
+    if booking.payment_status != models.PaymentStatus.PAID:
+        booking.payment_status = models.PaymentStatus.EXPIRED
+        if booking.status != models.BookingStatus.CANCELLED:
+            booking.status = models.BookingStatus.EXPIRED
+
+
+def get_card_details(payment_intent: dict) -> tuple[Optional[str], Optional[str]]:
+    charges = payment_intent.get("charges", {}).get("data", [])
+    if not charges:
+        return None, None
+    card = charges[0].get("payment_method_details", {}).get("card", {})
+    return card.get("last4"), card.get("brand")
+
+
+def build_payment_intent_response(
+    transaction: models.Transaction,
+    booking: models.Booking,
+    mode: str,
+) -> dict:
+    return {
+        "client_secret": transaction.provider_client_secret,
+        "payment_intent_id": transaction.stripe_payment_intent_id,
+        "transaction_ref": transaction.transaction_ref,
+        "amount": booking.total_amount,
+        "currency": "usd",
+        "booking_ref": booking.booking_ref,
+        "mode": mode,
+        "status": transaction.status.value,
+        "idempotency_key": transaction.idempotency_key,
+    }
+
+
+def create_pending_transaction(
+    db: Session,
+    booking: models.Booking,
+    payment_method: str,
+    idempotency_key: str,
+    retry_of_transaction_id: Optional[int] = None,
+) -> models.Transaction:
+    transaction = models.Transaction(
+        booking_id=booking.id,
+        transaction_ref=generate_txn_ref(),
+        idempotency_key=idempotency_key,
+        amount=booking.total_amount,
+        currency="USD",
+        payment_method=payment_method,
+        status=models.TransactionStatus.PENDING,
+        retry_of_transaction_id=retry_of_transaction_id,
+    )
+    db.add(transaction)
+    db.flush()
+    return transaction
 
 
 def upsert_success_transaction(
@@ -115,7 +230,6 @@ def upsert_success_transaction(
         transaction_ref=transaction_ref,
         payment_intent_id=payment_intent_id,
     )
-
     if not transaction:
         transaction = models.Transaction(
             booking_id=booking.id,
@@ -144,12 +258,54 @@ def upsert_success_transaction(
     return get_transaction_with_booking(db, transaction.id)
 
 
+def mark_transaction_processing(
+    db: Session,
+    booking: models.Booking,
+    transaction_ref: str,
+    payment_method: str,
+    payment_intent_id: Optional[str] = None,
+    card_last4: Optional[str] = None,
+    card_brand: Optional[str] = None,
+) -> models.Transaction:
+    transaction = get_transaction_by_reference(
+        db,
+        booking_id=booking.id,
+        transaction_ref=transaction_ref,
+        payment_intent_id=payment_intent_id,
+    )
+    if not transaction:
+        transaction = models.Transaction(
+            booking_id=booking.id,
+            transaction_ref=transaction_ref,
+            stripe_payment_intent_id=payment_intent_id,
+            amount=booking.total_amount,
+            currency="USD",
+            payment_method=payment_method,
+            status=models.TransactionStatus.PENDING,
+        )
+        db.add(transaction)
+
+    transaction.transaction_ref = transaction_ref
+    transaction.stripe_payment_intent_id = payment_intent_id
+    transaction.payment_method = payment_method
+    transaction.card_last4 = card_last4
+    transaction.card_brand = card_brand
+    transaction.status = models.TransactionStatus.PROCESSING
+    transaction.failure_reason = None
+    apply_processing_state(booking)
+
+    db.commit()
+    db.refresh(transaction)
+    return get_transaction_with_booking(db, transaction.id)
+
+
 def record_failed_transaction(
     db: Session,
     booking: models.Booking,
     reason: str,
     payment_method: str = "card",
     payment_intent_id: Optional[str] = None,
+    transaction_ref: Optional[str] = None,
 ) -> models.Transaction:
     if booking.payment_status == models.PaymentStatus.PAID:
         raise HTTPException(status_code=409, detail="Booking is already paid")
@@ -158,11 +314,12 @@ def record_failed_transaction(
         db,
         booking_id=booking.id,
         payment_intent_id=payment_intent_id,
+        transaction_ref=transaction_ref,
     )
     if not transaction:
         transaction = models.Transaction(
             booking_id=booking.id,
-            transaction_ref=generate_txn_ref(),
+            transaction_ref=transaction_ref or generate_txn_ref(),
             stripe_payment_intent_id=payment_intent_id,
             amount=booking.total_amount,
             currency="USD",
@@ -183,12 +340,38 @@ def record_failed_transaction(
     return transaction
 
 
-def get_card_details(payment_intent: dict) -> tuple[Optional[str], Optional[str]]:
-    charges = payment_intent.get("charges", {}).get("data", [])
-    if not charges:
-        return None, None
-    card = charges[0].get("payment_method_details", {}).get("card", {})
-    return card.get("last4"), card.get("brand")
+def reconcile_stuck_payments(
+    db: Session,
+    now: Optional[datetime] = None,
+    timeout_minutes: int = RECONCILIATION_TIMEOUT_MINUTES,
+) -> int:
+    now = now or utc_now()
+    timeout_cutoff = now - timedelta(minutes=timeout_minutes)
+    stale_transactions = (
+        db.query(models.Transaction)
+        .options(joinedload(models.Transaction.booking))
+        .filter(
+            models.Transaction.status.in_(
+                [models.TransactionStatus.PENDING, models.TransactionStatus.PROCESSING]
+            ),
+            models.Transaction.created_at <= timeout_cutoff,
+        )
+        .all()
+    )
+
+    updated = 0
+    for transaction in stale_transactions:
+        booking = transaction.booking
+        if get_success_transaction_for_booking(db, booking.id):
+            continue
+        transaction.status = models.TransactionStatus.EXPIRED
+        transaction.failure_reason = "Payment attempt expired before confirmation"
+        apply_expired_state(booking)
+        updated += 1
+
+    if updated:
+        db.commit()
+    return updated
 
 
 @router.post("/create-payment-intent")
@@ -196,28 +379,47 @@ def create_payment_intent(
     payload: schemas.CreatePaymentIntent,
     db: Session = Depends(get_db),
 ):
-    booking = get_booking_or_404(db, payload.booking_id)
-    release_expired_holds(db, booking_id=booking.id)
-    db.refresh(booking)
-    if expire_stale_booking_hold(booking):
-        db.commit()
-        db.refresh(booking)
-    if booking.status == models.BookingStatus.CANCELLED:
-        raise HTTPException(status_code=400, detail="Cancelled or expired bookings cannot be paid")
-    if booking.payment_status == models.PaymentStatus.PAID:
-        raise HTTPException(status_code=409, detail="Booking already paid")
-    if get_success_transaction_for_booking(db, booking.id):
-        raise HTTPException(status_code=409, detail="Booking already paid")
+    booking = ensure_booking_can_accept_payment(db, get_booking_or_404(db, payload.booking_id))
+    idempotency_key = payload.idempotency_key or f"pay_{uuid.uuid4().hex}"
+
+    existing_attempt = get_transaction_by_reference(
+        db,
+        booking_id=booking.id,
+        idempotency_key=idempotency_key,
+    )
+    if existing_attempt:
+        mode = "mock" if existing_attempt.payment_method == "mock" else "stripe"
+        return build_payment_intent_response(existing_attempt, booking, mode)
+
+    active_transaction = get_active_transaction_for_booking(db, booking.id)
+    if active_transaction:
+        raise HTTPException(
+            status_code=409,
+            detail="A payment attempt is already in progress for this booking",
+        )
+
+    latest_transaction = get_latest_transaction_for_booking(db, booking.id)
+    retry_of_transaction_id = None
+    if latest_transaction and latest_transaction.status in [
+        models.TransactionStatus.FAILED,
+        models.TransactionStatus.EXPIRED,
+    ]:
+        retry_of_transaction_id = latest_transaction.id
+
+    transaction = create_pending_transaction(
+        db=db,
+        booking=booking,
+        payment_method=payload.payment_method,
+        idempotency_key=idempotency_key,
+        retry_of_transaction_id=retry_of_transaction_id,
+    )
 
     if payload.payment_method == "mock":
-        return {
-            "client_secret": f"mock_{generate_txn_ref()}",
-            "payment_intent_id": f"pi_mock_{uuid.uuid4().hex[:16]}",
-            "amount": booking.total_amount,
-            "currency": "usd",
-            "booking_ref": booking.booking_ref,
-            "mode": "mock",
-        }
+        transaction.stripe_payment_intent_id = f"pi_mock_{uuid.uuid4().hex[:16]}"
+        transaction.provider_client_secret = f"mock_{transaction.transaction_ref}"
+        db.commit()
+        db.refresh(transaction)
+        return build_payment_intent_response(transaction, booking, "mock")
 
     stripe.api_key = settings.stripe_secret_key
     try:
@@ -228,18 +430,22 @@ def create_payment_intent(
                 "booking_id": str(booking.id),
                 "booking_ref": booking.booking_ref,
                 "email": booking.email,
+                "transaction_ref": transaction.transaction_ref,
+                "idempotency_key": idempotency_key,
             },
             receipt_email=booking.email,
+            idempotency_key=idempotency_key,
         )
-        return {
-            "client_secret": intent.client_secret,
-            "payment_intent_id": intent.id,
-            "amount": booking.total_amount,
-            "currency": "usd",
-            "booking_ref": booking.booking_ref,
-            "mode": "stripe",
-        }
+        transaction.stripe_payment_intent_id = intent.id
+        transaction.provider_client_secret = intent.client_secret
+        db.commit()
+        db.refresh(transaction)
+        return build_payment_intent_response(transaction, booking, "stripe")
     except stripe.error.StripeError as exc:
+        transaction.status = models.TransactionStatus.FAILED
+        transaction.failure_reason = str(exc.user_message)
+        apply_failed_state(booking)
+        db.commit()
         raise HTTPException(status_code=400, detail=str(exc.user_message))
 
 
@@ -248,16 +454,20 @@ def confirm_payment_success(
     payload: schemas.PaymentSuccess,
     db: Session = Depends(get_db),
 ):
-    booking = get_booking_or_404(db, payload.booking_id)
-    release_expired_holds(db, booking_id=booking.id)
-    db.refresh(booking)
-    if expire_stale_booking_hold(booking):
-        db.commit()
-        db.refresh(booking)
-    if booking.status == models.BookingStatus.CANCELLED:
-        raise HTTPException(status_code=400, detail="Cancelled or expired bookings cannot be paid")
+    booking = ensure_booking_can_accept_payment(db, get_booking_or_404(db, payload.booking_id))
 
-    transaction = upsert_success_transaction(
+    if payload.payment_method == "mock":
+        return upsert_success_transaction(
+            db=db,
+            booking=booking,
+            transaction_ref=payload.transaction_ref,
+            payment_method=payload.payment_method,
+            payment_intent_id=payload.payment_intent_id,
+            card_last4=payload.card_last4,
+            card_brand=payload.card_brand,
+        )
+
+    return mark_transaction_processing(
         db=db,
         booking=booking,
         transaction_ref=payload.transaction_ref,
@@ -266,7 +476,6 @@ def confirm_payment_success(
         card_last4=payload.card_last4,
         card_brand=payload.card_brand,
     )
-    return transaction
 
 
 @router.post("/payment-failure")
@@ -274,20 +483,25 @@ def record_payment_failure(
     booking_id: int,
     reason: str = "Payment declined",
     payment_intent_id: Optional[str] = None,
+    transaction_ref: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     booking = get_booking_or_404(db, booking_id)
     release_expired_holds(db, booking_id=booking.id)
     db.refresh(booking)
     if expire_stale_booking_hold(booking):
+        apply_expired_state(booking)
         db.commit()
         db.refresh(booking)
-        raise HTTPException(status_code=400, detail="Cancelled or expired bookings cannot be updated")
+        raise HTTPException(
+            status_code=400, detail="Cancelled or expired bookings cannot be updated"
+        )
     transaction = record_failed_transaction(
         db=db,
         booking=booking,
         reason=reason,
         payment_intent_id=payment_intent_id,
+        transaction_ref=transaction_ref,
     )
     return {"message": "Payment failure recorded", "transaction_ref": transaction.transaction_ref}
 
@@ -296,6 +510,7 @@ def record_payment_failure(
 def get_payment_status(booking_id: int, db: Session = Depends(get_db)):
     booking = get_booking_or_404(db, booking_id)
     if expire_stale_booking_hold(booking):
+        apply_expired_state(booking)
         db.commit()
         db.refresh(booking)
     latest_transaction = get_latest_transaction_for_booking(db, booking_id)
@@ -306,6 +521,15 @@ def get_payment_status(booking_id: int, db: Session = Depends(get_db)):
         payment_status=booking.payment_status,
         latest_transaction=latest_transaction,
     )
+
+
+@router.post("/reconcile-stuck")
+def reconcile_stuck_payment_attempts(
+    timeout_minutes: int = Query(RECONCILIATION_TIMEOUT_MINUTES, ge=1, le=1440),
+    db: Session = Depends(get_db),
+):
+    updated = reconcile_stuck_payments(db, timeout_minutes=timeout_minutes)
+    return {"message": "Reconciliation completed", "updated": updated}
 
 
 @router.get("/transactions", response_model=schemas.TransactionListResponse)
@@ -368,7 +592,9 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
             upsert_success_transaction(
                 db=db,
                 booking=booking,
-                transaction_ref="TXN-" + payment_intent["id"][-12:].upper(),
+                transaction_ref=payment_intent.get("metadata", {}).get(
+                    "transaction_ref", "TXN-" + payment_intent["id"][-12:].upper()
+                ),
                 payment_method="card",
                 payment_intent_id=payment_intent["id"],
                 card_last4=last4,
@@ -389,6 +615,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                     booking=booking,
                     reason=reason,
                     payment_intent_id=payment_intent["id"],
+                    transaction_ref=payment_intent.get("metadata", {}).get("transaction_ref"),
                 )
 
     return {"status": "ok"}

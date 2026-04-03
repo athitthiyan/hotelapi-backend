@@ -51,7 +51,8 @@ def expire_stale_booking_hold(booking: models.Booking, now: Optional[datetime] =
         and hold_expires_at
         and hold_expires_at <= now
     ):
-        booking.status = models.BookingStatus.CANCELLED
+        booking.status = models.BookingStatus.EXPIRED
+        booking.payment_status = models.PaymentStatus.EXPIRED
         return True
     return False
 
@@ -76,7 +77,8 @@ def release_expired_holds(
 
     expired_bookings = query.all()
     for booking in expired_bookings:
-        booking.status = models.BookingStatus.CANCELLED
+        booking.status = models.BookingStatus.EXPIRED
+        booking.payment_status = models.PaymentStatus.EXPIRED
 
     if expired_bookings:
         db.commit()
@@ -261,6 +263,8 @@ def cancel_booking(booking_id: int, db: Session = Depends(get_db)):
 
     if booking.status == models.BookingStatus.CANCELLED:
         raise HTTPException(status_code=400, detail="Booking already cancelled")
+    if booking.status == models.BookingStatus.EXPIRED:
+        raise HTTPException(status_code=400, detail="Booking already expired")
     if booking.payment_status == models.PaymentStatus.PAID:
         raise HTTPException(
             status_code=400,
