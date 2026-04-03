@@ -1,0 +1,153 @@
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+
+import models
+
+
+def create_room(db_session, **overrides):
+    room = models.Room(
+        hotel_name=overrides.get("hotel_name", "Hotel One"),
+        room_type=overrides.get("room_type", models.RoomType.DELUXE),
+        description=overrides.get("description", "desc"),
+        price=overrides.get("price", 200.0),
+        availability=overrides.get("availability", True),
+        rating=overrides.get("rating", 4.5),
+        review_count=overrides.get("review_count", 10),
+        image_url=overrides.get("image_url", "https://example.com/room.jpg"),
+        location=overrides.get("location", "New York"),
+        city=overrides.get("city", "New York"),
+        country=overrides.get("country", "USA"),
+        max_guests=overrides.get("max_guests", 2),
+        is_featured=overrides.get("is_featured", False),
+    )
+    db_session.add(room)
+    db_session.commit()
+    db_session.refresh(room)
+    return room
+
+
+def create_booking_and_transaction(db_session, room, success=True):
+    booking = models.Booking(
+        booking_ref="BKANLT01" if success else "BKANLT02",
+        user_name="Athit",
+        email="athit@example.com",
+        room_id=room.id,
+        check_in=datetime.now(timezone.utc),
+        check_out=datetime.now(timezone.utc) + timedelta(days=2),
+        guests=2,
+        nights=2,
+        room_rate=room.price * 2,
+        taxes=20,
+        service_fee=10,
+        total_amount=room.price * 2 + 30,
+        status=models.BookingStatus.CONFIRMED if success else models.BookingStatus.PENDING,
+        payment_status=models.PaymentStatus.PAID if success else models.PaymentStatus.FAILED,
+    )
+    db_session.add(booking)
+    db_session.commit()
+    db_session.refresh(booking)
+
+    txn = models.Transaction(
+        booking_id=booking.id,
+        transaction_ref="TXNANLT01" if success else "TXNANLT02",
+        amount=booking.total_amount,
+        currency="USD",
+        payment_method="card",
+        status=models.TransactionStatus.SUCCESS if success else models.TransactionStatus.FAILED,
+        failure_reason=None if success else "Declined",
+    )
+    db_session.add(txn)
+    db_session.commit()
+    return booking, txn
+
+
+def test_get_rooms_filters_and_pagination(client, db_session):
+    create_room(db_session, hotel_name="Hotel A", city="Paris", price=300, max_guests=4, is_featured=True)
+    create_room(db_session, hotel_name="Hotel B", city="London", price=100, availability=False)
+    create_room(db_session, hotel_name="Hotel C", city="Paris", price=150, room_type=models.RoomType.SUITE)
+
+    response = client.get(
+        "/rooms",
+        params={
+            "city": "Paris",
+            "min_price": 140,
+            "max_price": 350,
+            "guests": 2,
+            "featured": "true",
+            "page": 1,
+            "per_page": 10,
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["rooms"][0]["hotel_name"] == "Hotel A"
+
+
+def test_get_featured_get_room_and_create_room(client, db_session):
+    featured = create_room(db_session, hotel_name="Featured", is_featured=True)
+
+    featured_response = client.get("/rooms/featured", params={"limit": 5})
+    room_response = client.get(f"/rooms/{featured.id}")
+    create_response = client.post(
+        "/rooms",
+        json={
+            "hotel_name": "Created Room",
+            "room_type": "suite",
+            "description": "new room",
+            "price": 250,
+            "availability": True,
+            "rating": 4.6,
+            "review_count": 5,
+            "image_url": "https://example.com/new.jpg",
+            "gallery_urls": None,
+            "amenities": None,
+            "location": "Rome",
+            "city": "Rome",
+            "country": "Italy",
+            "max_guests": 3,
+            "beds": 2,
+            "bathrooms": 1,
+            "size_sqft": 600,
+            "floor": 4,
+            "is_featured": False,
+        },
+    )
+
+    assert featured_response.status_code == 200
+    assert len(featured_response.json()) == 1
+    assert room_response.status_code == 200
+    assert room_response.json()["hotel_name"] == "Featured"
+    assert create_response.status_code == 201
+    assert create_response.json()["hotel_name"] == "Created Room"
+
+
+def test_get_room_not_found(client):
+    response = client.get("/rooms/999999")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Room not found"
+
+
+def test_analytics_recent_bookings_and_revenue_stats(client, db_session):
+    success_room = create_room(db_session, hotel_name="Analytics Success", room_type=models.RoomType.SUITE)
+    failed_room = create_room(db_session, hotel_name="Analytics Failed", room_type=models.RoomType.DELUXE)
+    create_booking_and_transaction(db_session, success_room, success=True)
+    create_booking_and_transaction(db_session, failed_room, success=False)
+
+    with patch("routers.analytics.cast", side_effect=lambda value, _type: value):
+        analytics = client.get("/analytics", params={"days": 30})
+        recent = client.get("/analytics/recent-bookings", params={"limit": 5})
+        revenue = client.get("/analytics/revenue-stats")
+
+    assert analytics.status_code == 200
+    analytics_body = analytics.json()
+    assert analytics_body["kpis"]["total_bookings"] == 2
+    assert analytics_body["kpis"]["failed_payments"] == 1
+    assert analytics_body["payment_breakdown"]
+    assert analytics_body["room_type_breakdown"]
+
+    assert recent.status_code == 200
+    assert recent.json()["total"] == 2
+
+    assert revenue.status_code == 200
+    assert revenue.json()["this_month"] >= 0
