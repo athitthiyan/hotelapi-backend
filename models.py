@@ -112,7 +112,7 @@ class Booking(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     room = relationship("Room", back_populates="bookings")
-    transaction = relationship("Transaction", back_populates="booking", uselist=False)
+    transactions = relationship("Transaction", back_populates="booking")
 
 
 class Transaction(Base):
@@ -121,7 +121,7 @@ class Transaction(Base):
     id = Column(Integer, primary_key=True, index=True)
     booking_id = Column(Integer, ForeignKey("bookings.id"), nullable=False)
     transaction_ref = Column(String(100), unique=True, index=True)
-    stripe_payment_intent_id = Column(String(200))
+    stripe_payment_intent_id = Column(String(200), index=True)
     amount = Column(Float, nullable=False)
     currency = Column(String(10), default="USD")
     payment_method = Column(String(50))  # card, mock
@@ -139,4 +139,4 @@ class Transaction(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-    booking = relationship("Booking", back_populates="transaction")
+    booking = relationship("Booking", back_populates="transactions")

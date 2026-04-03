@@ -161,6 +161,14 @@ class TransactionListResponse(BaseModel):
     total: int
 
 
+class PaymentStateResponse(BaseModel):
+    booking_id: int
+    booking_ref: str
+    booking_status: BookingStatus
+    payment_status: PaymentStatus
+    latest_transaction: Optional[TransactionResponse] = None
+
+
 # ─── Analytics Schemas ────────────────────────────────────────────────────────
 
 class KPIStats(BaseModel):
