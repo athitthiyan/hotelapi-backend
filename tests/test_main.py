@@ -40,7 +40,7 @@ def test_startup_checks_success():
     manager.__exit__.return_value = False
 
     inspector = MagicMock()
-    inspector.get_table_names.return_value = ["rooms", "bookings", "transactions"]
+    inspector.get_table_names.return_value = ["rooms", "bookings", "transactions", "users"]
 
     with patch.object(main.engine, "begin", return_value=manager), patch.object(
         main, "inspect", return_value=inspector

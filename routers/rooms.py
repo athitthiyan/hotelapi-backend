@@ -5,6 +5,7 @@ from typing import Optional
 from datetime import datetime
 import models, schemas
 from database import get_db
+from routers.auth import get_current_admin
 
 router = APIRouter(prefix="/rooms", tags=["Rooms"])
 
@@ -61,7 +62,11 @@ def get_room(room_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=schemas.RoomResponse, status_code=201)
-def create_room(room: schemas.RoomCreate, db: Session = Depends(get_db)):
+def create_room(
+    room: schemas.RoomCreate,
+    db: Session = Depends(get_db),
+    _admin: models.User = Depends(get_current_admin),
+):
     db_room = models.Room(**room.model_dump())
     db.add(db_room)
     db.commit()

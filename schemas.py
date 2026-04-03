@@ -221,3 +221,36 @@ class AnalyticsResponse(BaseModel):
     monthly_revenue: List[MonthlyRevenue]
     payment_breakdown: List[PaymentStatusBreakdown]
     room_type_breakdown: List[RoomTypeBreakdown]
+
+
+class UserSignup(BaseModel):
+    email: EmailStr
+    full_name: str
+    password: str
+
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class UserResponse(BaseModel):
+    id: int
+    email: EmailStr
+    full_name: str
+    is_admin: bool
+    is_active: bool
+
+    class Config:
+        from_attributes = True
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    user: UserResponse
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str

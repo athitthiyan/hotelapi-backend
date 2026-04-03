@@ -5,6 +5,7 @@ from typing import Optional
 from datetime import datetime, timedelta
 import models, schemas
 from database import get_db
+from routers.auth import get_current_admin
 
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
 
@@ -13,6 +14,7 @@ router = APIRouter(prefix="/analytics", tags=["Analytics"])
 def get_analytics(
     days: int = Query(30, ge=7, le=365),
     db: Session = Depends(get_db),
+    _admin: models.User = Depends(get_current_admin),
 ):
     now = datetime.utcnow()
     start_date = now - timedelta(days=days)
@@ -162,7 +164,11 @@ def get_analytics(
 
 
 @router.get("/recent-bookings", response_model=schemas.BookingListResponse)
-def get_recent_bookings(limit: int = Query(10, ge=1, le=50), db: Session = Depends(get_db)):
+def get_recent_bookings(
+    limit: int = Query(10, ge=1, le=50),
+    db: Session = Depends(get_db),
+    _admin: models.User = Depends(get_current_admin),
+):
     from sqlalchemy.orm import joinedload
     bookings = db.query(models.Booking).options(
         joinedload(models.Booking.room)
@@ -171,7 +177,10 @@ def get_recent_bookings(limit: int = Query(10, ge=1, le=50), db: Session = Depen
 
 
 @router.get("/revenue-stats")
-def get_revenue_stats(db: Session = Depends(get_db)):
+def get_revenue_stats(
+    db: Session = Depends(get_db),
+    _admin: models.User = Depends(get_current_admin),
+):
     this_month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0)
     last_month_start = (this_month_start - timedelta(days=1)).replace(day=1)
 

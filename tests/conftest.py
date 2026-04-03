@@ -15,7 +15,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///./test_bootstrap.db")
 
 import models  # noqa: E402
 from database import Base, get_db  # noqa: E402
-from routers import analytics, bookings, payments, rooms  # noqa: E402
+from routers import analytics, auth, bookings, payments, rooms  # noqa: E402
 
 
 @pytest.fixture()
@@ -29,6 +29,7 @@ def app(tmp_path):
     Base.metadata.create_all(bind=engine)
 
     app = FastAPI()
+    app.include_router(auth.router)
     app.include_router(bookings.router)
     app.include_router(payments.router)
     app.include_router(rooms.router)

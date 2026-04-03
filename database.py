@@ -44,6 +44,18 @@ class Settings(BaseSettings):
         default="http://localhost:4200,https://stayease-booking-app.vercel.app,https://payflow-payment-app.vercel.app,https://insightboard-admin.vercel.app",
         validation_alias=AliasChoices("ALLOWED_ORIGINS", "allowed_origins"),
     )
+    access_token_exp_minutes: int = Field(
+        default=30,
+        validation_alias=AliasChoices(
+            "ACCESS_TOKEN_EXP_MINUTES", "access_token_exp_minutes"
+        ),
+    )
+    refresh_token_exp_days: int = Field(
+        default=7,
+        validation_alias=AliasChoices(
+            "REFRESH_TOKEN_EXP_DAYS", "refresh_token_exp_days"
+        ),
+    )
     auto_create_schema: bool = Field(
         default=False,
         validation_alias=AliasChoices("AUTO_CREATE_SCHEMA", "auto_create_schema"),

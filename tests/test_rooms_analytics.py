@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import models
+from routers.auth import hash_password
 
 
 def create_room(db_session, **overrides):
@@ -86,11 +87,27 @@ def test_get_rooms_filters_and_pagination(client, db_session):
 
 def test_get_featured_get_room_and_create_room(client, db_session):
     featured = create_room(db_session, hotel_name="Featured", is_featured=True)
+    admin = models.User(
+        email="admin-rooms@example.com",
+        full_name="Admin Rooms",
+        hashed_password=hash_password("AdminPass123"),
+        is_admin=True,
+        is_active=True,
+    )
+    db_session.add(admin)
+    db_session.commit()
+
+    login = client.post(
+        "/auth/login",
+        json={"email": "admin-rooms@example.com", "password": "AdminPass123"},
+    )
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
     featured_response = client.get("/rooms/featured", params={"limit": 5})
     room_response = client.get(f"/rooms/{featured.id}")
     create_response = client.post(
         "/rooms",
+        headers=headers,
         json={
             "hotel_name": "Created Room",
             "room_type": "suite",
@@ -129,15 +146,30 @@ def test_get_room_not_found(client):
 
 
 def test_analytics_recent_bookings_and_revenue_stats(client, db_session):
+    admin = models.User(
+        email="admin-analytics@example.com",
+        full_name="Admin Analytics",
+        hashed_password=hash_password("AdminPass123"),
+        is_admin=True,
+        is_active=True,
+    )
+    db_session.add(admin)
+    db_session.commit()
+    login = client.post(
+        "/auth/login",
+        json={"email": "admin-analytics@example.com", "password": "AdminPass123"},
+    )
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
     success_room = create_room(db_session, hotel_name="Analytics Success", room_type=models.RoomType.SUITE)
     failed_room = create_room(db_session, hotel_name="Analytics Failed", room_type=models.RoomType.DELUXE)
     create_booking_and_transaction(db_session, success_room, success=True)
     create_booking_and_transaction(db_session, failed_room, success=False)
 
     with patch("routers.analytics.cast", side_effect=lambda value, _type: value):
-        analytics = client.get("/analytics", params={"days": 30})
-        recent = client.get("/analytics/recent-bookings", params={"limit": 5})
-        revenue = client.get("/analytics/revenue-stats")
+        analytics = client.get("/analytics", headers=headers, params={"days": 30})
+        recent = client.get("/analytics/recent-bookings", headers=headers, params={"limit": 5})
+        revenue = client.get("/analytics/revenue-stats", headers=headers)
 
     assert analytics.status_code == 200
     analytics_body = analytics.json()
