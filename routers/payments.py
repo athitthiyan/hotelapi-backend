@@ -410,7 +410,16 @@ def record_failed_transaction(
     transaction.failure_reason = reason
 
     apply_failed_state(booking)
-    release_inventory_for_booking(db, booking=booking)
+    # Only release inventory if the hold window has already expired.
+    # While the hold is still valid the user can retry with a different card —
+    # keeping the lock means no extend-hold call is needed within the window.
+    now = utc_now()
+    hold_exp = booking.hold_expires_at
+    if hold_exp is not None and hold_exp.tzinfo is None:
+        hold_exp = hold_exp.replace(tzinfo=timezone.utc)
+    if not hold_exp or hold_exp <= now:
+        release_inventory_for_booking(db, booking=booking)
+    # else: hold still valid — keep the lock so the user can retry immediately
     db.flush()
     queue_payment_failure_email(db, booking, transaction, reason)
 
