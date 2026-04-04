@@ -19,6 +19,7 @@ Branches covered:
 from __future__ import annotations
 
 import pytest
+from datetime import datetime, timezone
 
 from routers.auth import hash_password
 import models
@@ -146,6 +147,41 @@ class TestGetRooms:
         assert r.status_code == 200
         assert all(room["room_type"] == "deluxe" for room in r.json()["rooms"])
 
+    def test_landmark_rating_and_amenity_filters(self, client, db_session):
+        make_admin(db_session)
+        headers = admin_login(client)
+        create_room_via_api(
+            client,
+            headers,
+            hotel_name="Beach View",
+            city="Chennai",
+            location="Near Marina Beach",
+            rating=4.7,
+            amenities='["WiFi","Breakfast","Family"]',
+        )
+        create_room_via_api(
+            client,
+            headers,
+            hotel_name="City Budget",
+            city="Chennai",
+            location="Near Central",
+            rating=3.8,
+            amenities='["WiFi"]',
+        )
+
+        r = client.get(
+            "/rooms",
+            params={
+                "city": "Chennai",
+                "landmark": "Marina Beach",
+                "min_rating": 4.5,
+                "amenities": "Breakfast,Family",
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["total"] == 1
+        assert r.json()["rooms"][0]["hotel_name"] == "Beach View"
+
     def test_min_price_filter(self, client, db_session):
         make_admin(db_session)
         headers = admin_login(client)
@@ -187,18 +223,18 @@ class TestGetRooms:
         assert all(room["is_featured"] is False for room in r.json()["rooms"])
 
     def test_check_in_check_out_inventory_filter(self, client, db_session):
-        """Rooms without inventory for the requested dates should be excluded."""
+        """Rooms remain searchable when no inventory rows have been initialized yet."""
         make_admin(db_session)
         headers = admin_login(client)
         create_room_via_api(client, headers, city="InventoryCity")
-        # No inventory upserted → room should be filtered out
+        # No inventory upserted → default availability path should still include the room
         r = client.get("/rooms", params={
             "city": "InventoryCity",
             "check_in": "2035-01-10",
             "check_out": "2035-01-12",
         })
         assert r.status_code == 200
-        assert r.json()["total"] == 0
+        assert r.json()["total"] == 1
 
     def test_pagination(self, client, db_session):
         make_admin(db_session)
@@ -220,6 +256,23 @@ class TestGetRooms:
         assert r.status_code == 200
         prices = [room["price"] for room in r.json()["rooms"]]
         assert prices == sorted(prices)
+
+    def test_sort_aliases_are_supported(self, client, db_session):
+        make_admin(db_session)
+        headers = admin_login(client)
+        create_room_via_api(client, headers, city="AliasCity", hotel_name="Budget", price=100.0, rating=4.0, review_count=10)
+        create_room_via_api(client, headers, city="AliasCity", hotel_name="Luxury", price=500.0, rating=4.9, review_count=500, is_featured=True)
+
+        price_desc = client.get("/rooms", params={"city": "AliasCity", "sort_by": "price_high_to_low"})
+        top_rated = client.get("/rooms", params={"city": "AliasCity", "sort_by": "top_rated"})
+        most_popular = client.get("/rooms", params={"city": "AliasCity", "sort_by": "most_popular"})
+
+        assert price_desc.status_code == 200
+        assert top_rated.status_code == 200
+        assert most_popular.status_code == 200
+        assert price_desc.json()["rooms"][0]["hotel_name"] == "Luxury"
+        assert top_rated.json()["rooms"][0]["hotel_name"] == "Luxury"
+        assert most_popular.json()["rooms"][0]["hotel_name"] == "Luxury"
 
 
 # ─── get_featured_rooms ───────────────────────────────────────────────────────
@@ -375,18 +428,21 @@ class TestDeleteRoom:
             "full_name": "Booker",
             "password": "BookerPass123",
         })
-        user_headers = auth_header(signup.json()["access_token"])
-
-        # Create a booking directly in DB to avoid inventory requirements
         booking = models.Booking(
+            booking_ref="REF-DELETE-TEST",
+            user_name="Booker",
+            email="booker@rooms.com",
             room_id=room["id"],
-            user_id=signup.json()["user"]["id"],
-            check_in="2032-01-01",
-            check_out="2032-01-03",
+            check_in=datetime(2032, 1, 1, tzinfo=timezone.utc),
+            check_out=datetime(2032, 1, 3, tzinfo=timezone.utc),
             guests=1,
-            total_price=400.0,
+            nights=2,
+            room_rate=350.0,
+            taxes=30.0,
+            service_fee=20.0,
+            total_amount=400.0,
             status=models.BookingStatus.CONFIRMED,
-            reference="REF-DELETE-TEST",
+            payment_status=models.PaymentStatus.PAID,
         )
         db_session.add(booking)
         db_session.commit()

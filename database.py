@@ -60,6 +60,18 @@ class Settings(BaseSettings):
             "REFRESH_TOKEN_EXP_DAYS", "refresh_token_exp_days"
         ),
     )
+    seed_admin_email: str = Field(
+        default="admin@example.com",
+        validation_alias=AliasChoices("SEED_ADMIN_EMAIL", "seed_admin_email"),
+    )
+    seed_admin_password: str = Field(
+        default="AdminPass123",
+        validation_alias=AliasChoices("SEED_ADMIN_PASSWORD", "seed_admin_password"),
+    )
+    seed_admin_name: str = Field(
+        default="InsightBoard Admin",
+        validation_alias=AliasChoices("SEED_ADMIN_NAME", "seed_admin_name"),
+    )
     auto_create_schema: bool = Field(
         default=False,
         validation_alias=AliasChoices("AUTO_CREATE_SCHEMA", "auto_create_schema"),

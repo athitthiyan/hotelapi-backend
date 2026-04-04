@@ -60,16 +60,23 @@ def score_room(room: models.Room) -> float:
 
 
 def sort_rooms(rooms: list[models.Room], sort_by: str) -> list[models.Room]:
-    if sort_by == "price_asc":
+    normalized_sort = {
+        "price_low_to_high": "price_asc",
+        "price_high_to_low": "price_desc",
+        "top_rated": "rating_desc",
+        "most_popular": "featured",
+    }.get(sort_by, sort_by)
+
+    if normalized_sort == "price_asc":
         return sorted(rooms, key=lambda room: (room.price, -room.rating, room.id))
-    if sort_by == "price_desc":
+    if normalized_sort == "price_desc":
         return sorted(rooms, key=lambda room: (-room.price, -room.rating, room.id))
-    if sort_by == "rating_desc":
+    if normalized_sort == "rating_desc":
         return sorted(
             rooms,
             key=lambda room: (-room.rating, -room.review_count, room.price, room.id),
         )
-    if sort_by == "featured":
+    if normalized_sort == "featured":
         return sorted(
             rooms,
             key=lambda room: (

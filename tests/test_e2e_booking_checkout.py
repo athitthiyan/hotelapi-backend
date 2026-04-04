@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from routers.auth import hash_password
 
 import models
@@ -5,6 +7,25 @@ import models
 
 def auth_header(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
+
+
+def create_admin_headers(client, db_session) -> dict:
+    admin = models.User(
+        email="admin-e2e-retry@example.com",
+        full_name="Admin Retry",
+        hashed_password=hash_password("AdminPass123"),
+        is_admin=True,
+        is_active=True,
+    )
+    db_session.add(admin)
+    db_session.commit()
+
+    login = client.post(
+        "/auth/login",
+        json={"email": "admin-e2e-retry@example.com", "password": "AdminPass123"},
+    )
+    assert login.status_code == 200
+    return auth_header(login.json()["access_token"])
 
 
 def test_e2e_customer_booking_to_confirmation_flow(client, db_session):
@@ -121,3 +142,94 @@ def test_e2e_customer_booking_to_confirmation_flow(client, db_session):
     assert "payment_receipt" in event_types
     assert process_notifications.status_code == 200
     assert process_notifications.json()["processed"] >= 3
+
+
+def test_e2e_card_decline_then_retry_success_flow(client, create_booking, db_session):
+    booking = create_booking()
+    admin_headers = create_admin_headers(client, db_session)
+
+    def stripe_intent(intent_id: str, secret: str):
+        class Intent:
+            id = intent_id
+            client_secret = secret
+
+        return Intent()
+
+    with patch(
+        "routers.payments.stripe.PaymentIntent.create",
+        side_effect=[
+            stripe_intent("pi_e2e_fail_001", "secret_fail_001"),
+            stripe_intent("pi_e2e_retry_001", "secret_retry_001"),
+        ],
+    ):
+        first_intent = client.post(
+            "/payments/create-payment-intent",
+            json={
+                "booking_id": booking["id"],
+                "payment_method": "card",
+                "idempotency_key": "e2e-retry-001",
+            },
+        )
+        assert first_intent.status_code == 200
+
+        failed = client.post(
+            "/payments/payment-failure",
+            params={
+                "booking_id": booking["id"],
+                "payment_intent_id": first_intent.json()["payment_intent_id"],
+                "transaction_ref": first_intent.json()["transaction_ref"],
+                "reason": "Card declined",
+            },
+        )
+        assert failed.status_code == 200
+
+        second_intent = client.post(
+            "/payments/create-payment-intent",
+            json={
+                "booking_id": booking["id"],
+                "payment_method": "card",
+                "idempotency_key": "e2e-retry-002",
+            },
+        )
+        assert second_intent.status_code == 200
+
+    success = client.post(
+        "/payments/payment-success",
+        json={
+            "booking_id": booking["id"],
+            "payment_intent_id": second_intent.json()["payment_intent_id"],
+            "transaction_ref": second_intent.json()["transaction_ref"],
+            "payment_method": "card",
+            "card_last4": "4242",
+            "card_brand": "visa",
+        },
+    )
+    assert success.status_code == 200
+
+    payment_status = client.get(f"/payments/status/{booking['id']}")
+    booking_by_ref = client.get(f"/bookings/ref/{booking['booking_ref']}")
+    transactions = client.get("/payments/transactions", headers=admin_headers)
+
+    assert payment_status.status_code == 200
+    assert payment_status.json()["payment_status"] == "paid"
+    assert payment_status.json()["latest_transaction"]["status"] == "success"
+
+    assert booking_by_ref.status_code == 200
+    assert booking_by_ref.json()["status"] == "confirmed"
+    assert booking_by_ref.json()["payment_status"] == "paid"
+
+    assert transactions.status_code == 200
+    txn_refs = {txn["transaction_ref"] for txn in transactions.json()["transactions"]}
+    assert first_intent.json()["transaction_ref"] in txn_refs
+    assert second_intent.json()["transaction_ref"] in txn_refs
+
+    db_txns = (
+        db_session.query(models.Transaction)
+        .filter(models.Transaction.booking_id == booking["id"])
+        .order_by(models.Transaction.id.asc())
+        .all()
+    )
+    assert len(db_txns) == 2
+    assert db_txns[0].status == models.TransactionStatus.FAILED
+    assert db_txns[1].status == models.TransactionStatus.SUCCESS
+    assert db_txns[1].retry_of_transaction_id == db_txns[0].id

@@ -7,6 +7,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
+import models
 from database import Base, SessionLocal, engine, settings, validate_runtime_configuration
 from routers import analytics, auth, bookings, notifications, ops, payments, reviews, rooms, wishlist
 
@@ -107,11 +108,10 @@ def health_check():
 
 @app.post("/seed", tags=["Dev"])
 def seed_database(db=None):
-    """Seed the database with sample rooms. Run once after deployment."""
+    """Seed the database with demo rooms and an admin account."""
     db = SessionLocal()
     try:
-        if db.query(__import__("models").Room).count() > 0:
-            return {"message": "Database already seeded"}
+        rooms_created = 0
 
         sample_rooms = [
             {
@@ -304,10 +304,36 @@ def seed_database(db=None):
             },
         ]
 
-        for room_data in sample_rooms:
-            room = __import__("models").Room(**room_data)
-            db.add(room)
+        existing_room_count = db.query(models.Room).count()
+        if existing_room_count == 0:
+            for room_data in sample_rooms:
+                room = models.Room(**room_data)
+                db.add(room)
+                rooms_created += 1
+
+        admin_user = db.query(models.User).filter(
+            models.User.email == settings.seed_admin_email
+        ).first()
+        admin_created = False
+        if not admin_user:
+            admin_user = models.User(
+                email=settings.seed_admin_email,
+                full_name=settings.seed_admin_name,
+                hashed_password=auth.hash_password(settings.seed_admin_password),
+                is_admin=True,
+                is_active=True,
+            )
+            db.add(admin_user)
+            admin_created = True
+
         db.commit()
-        return {"message": f"Seeded {len(sample_rooms)} rooms successfully"}
+
+        return {
+            "message": "Seed completed successfully",
+            "rooms_created": rooms_created,
+            "admin_created": admin_created,
+            "admin_email": settings.seed_admin_email,
+            "admin_name": settings.seed_admin_name,
+        }
     finally:
         db.close()

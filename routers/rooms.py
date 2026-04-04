@@ -28,9 +28,12 @@ router = APIRouter(prefix="/rooms", tags=["Rooms"])
 def get_rooms(
     query: Optional[str] = Query(None),
     city: Optional[str] = Query(None),
+    landmark: Optional[str] = Query(None),
     room_type: Optional[str] = Query(None),
     min_price: Optional[float] = Query(None),
     max_price: Optional[float] = Query(None),
+    min_rating: Optional[float] = Query(None),
+    amenities: Optional[str] = Query(None),
     guests: Optional[int] = Query(None),
     check_in: Optional[str] = Query(None),
     check_out: Optional[str] = Query(None),
@@ -43,9 +46,12 @@ def get_rooms(
     cache_key = make_search_cache_key(
         query=query,
         city=city,
+        landmark=landmark,
         room_type=room_type,
         min_price=min_price,
         max_price=max_price,
+        min_rating=min_rating,
+        amenities=amenities,
         guests=guests,
         check_in=check_in,
         check_out=check_out,
@@ -70,16 +76,23 @@ def get_rooms(
         )
     if city:
         room_query = room_query.filter(models.Room.city.ilike(f"%{city}%"))
+    if landmark:
+        room_query = room_query.filter(models.Room.location.ilike(f"%{landmark}%"))
     if room_type:
         room_query = room_query.filter(models.Room.room_type == room_type)
     if min_price is not None:
         room_query = room_query.filter(models.Room.price >= min_price)
     if max_price is not None:
         room_query = room_query.filter(models.Room.price <= max_price)
+    if min_rating is not None:
+        room_query = room_query.filter(models.Room.rating >= min_rating)
     if guests:
         room_query = room_query.filter(models.Room.max_guests >= guests)
     if featured is not None:
         room_query = room_query.filter(models.Room.is_featured == featured)
+    if amenities:
+        for amenity in [item.strip() for item in amenities.split(",") if item.strip()]:
+            room_query = room_query.filter(models.Room.amenities.ilike(f"%{amenity}%"))
 
     rooms = room_query.all()
     if check_in and check_out:
