@@ -51,6 +51,7 @@ def startup_checks():
 
 # Always-allowed production origins (code-level guarantee, not reliant on env var)
 _HARDCODED_ORIGINS = [
+    "https://stayease-booking-app.vercel.app",
     "https://stayease-booking-app-git-main-athitthiyans-projects.vercel.app",
     "https://payflow-payment-app.vercel.app",
     "https://insightboard-admin.vercel.app",
