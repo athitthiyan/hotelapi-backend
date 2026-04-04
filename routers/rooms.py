@@ -2,12 +2,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import case, func
 from typing import Optional
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 import models, schemas
 from database import get_db
 from routers.auth import get_current_admin
 from services.audit_service import write_audit_log
-from services.inventory_service import is_inventory_available, upsert_inventory_range
+from services.inventory_service import (
+    is_inventory_available,
+    iter_stay_dates,
+    release_expired_inventory_locks,
+    upsert_inventory_range,
+)
 from services.search_service import (
     clear_search_cache,
     get_cached_search,
@@ -152,6 +157,102 @@ def get_destinations(
         for row in rows
     ]
     return {"destinations": destinations, "total": len(destinations)}
+
+
+@router.get("/{room_id}/unavailable-dates", response_model=schemas.UnavailableDatesResponse)
+def get_room_unavailable_dates(
+    room_id: int,
+    from_date: Optional[date] = Query(default=None),
+    to_date: Optional[date] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """Return the set of dates (in ISO format) that are unavailable for booking.
+
+    * **unavailable_dates** — permanently blocked or confirmed; will not free up.
+    * **held_dates** — locked by an active inventory hold; *may* free up when the
+      hold expires.
+
+    Defaults to a 180-day window starting from today.
+    """
+    utc_today = datetime.now(timezone.utc).date()
+    if from_date is None:
+        from_date = utc_today
+    if to_date is None:
+        to_date = utc_today + timedelta(days=180)
+
+    if to_date < from_date:
+        raise HTTPException(status_code=400, detail="to_date must be >= from_date")
+
+    room = db.query(models.Room).filter(models.Room.id == room_id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+
+    # Clean up expired locks so we report an accurate picture
+    release_expired_inventory_locks(db, room_id=room_id)
+
+    # -----------------------------------------------------------------
+    # 1.  Dates from the inventory table (locked or blocked rows)
+    # -----------------------------------------------------------------
+    inventory_rows = (
+        db.query(models.RoomInventory)
+        .filter(
+            models.RoomInventory.room_id == room_id,
+            models.RoomInventory.inventory_date >= from_date,
+            models.RoomInventory.inventory_date <= to_date,
+        )
+        .all()
+    )
+
+    unavailable_dates: set[str] = set()
+    held_dates: set[str] = set()
+    now = datetime.now(timezone.utc)
+
+    for row in inventory_rows:
+        date_str = row.inventory_date.isoformat()
+        if row.available_units <= 0 and row.locked_units == 0:
+            # Permanently blocked (e.g. confirmed, admin-blocked)
+            unavailable_dates.add(date_str)
+        elif row.locked_units > 0 and row.lock_expires_at is not None:
+            # Active temporary hold
+            lock_exp = row.lock_expires_at
+            if lock_exp.tzinfo is None:
+                lock_exp = lock_exp.replace(tzinfo=timezone.utc)
+            if lock_exp > now:
+                held_dates.add(date_str)
+            # if expired but release_expired_inventory_locks didn't catch it yet → skip
+        elif row.available_units <= 0:
+            # No units, no active lock — treat as unavailable
+            unavailable_dates.add(date_str)
+
+    # -----------------------------------------------------------------
+    # 2.  Expand CONFIRMED bookings into individual night dates
+    #     (these might not have inventory rows if inventory was never
+    #     initialised for those dates)
+    # -----------------------------------------------------------------
+    from_dt = datetime.combine(from_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+    to_dt = datetime.combine(to_date, datetime.max.time()).replace(tzinfo=timezone.utc)
+
+    confirmed_bookings = (
+        db.query(models.Booking)
+        .filter(
+            models.Booking.room_id == room_id,
+            models.Booking.status == models.BookingStatus.CONFIRMED,
+            models.Booking.check_in < to_dt,
+            models.Booking.check_out > from_dt,
+        )
+        .all()
+    )
+    for booking in confirmed_bookings:
+        for stay_date in iter_stay_dates(booking.check_in, booking.check_out):
+            if from_date <= stay_date <= to_date:
+                unavailable_dates.add(stay_date.isoformat())
+                # Remove from held if we also have it there (confirmed takes priority)
+                held_dates.discard(stay_date.isoformat())
+
+    return schemas.UnavailableDatesResponse(
+        unavailable_dates=sorted(unavailable_dates),
+        held_dates=sorted(held_dates - unavailable_dates),
+    )
 
 
 @router.get("/{room_id}", response_model=schemas.RoomResponse)

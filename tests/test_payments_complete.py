@@ -634,9 +634,12 @@ class TestGetTransaction:
 
 
 class TestListTransactions:
-    def test_list_requires_admin(self, client):
+    def test_list_public_access(self, client):
+        # GET /payments/transactions is intentionally public so that the
+        # PayFlow frontend (which has no login system) can display transaction
+        # history without needing admin credentials.
         r = client.get("/payments/transactions")
-        assert r.status_code == 401
+        assert r.status_code == 200
 
     def test_list_returns_all(self, client, db_session, room_id):
         headers = admin_headers(client, db_session)

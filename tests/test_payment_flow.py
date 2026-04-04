@@ -131,7 +131,14 @@ def test_mock_payment_marks_booking_paid_immediately(client, create_booking, db_
     assert booking_row.status == models.BookingStatus.CONFIRMED
 
 
-def test_card_payment_waits_for_webhook_confirmation(client, create_booking, db_session):
+def test_card_payment_confirms_immediately_via_payment_success(client, create_booking, db_session):
+    """
+    After the client side confirms a card payment (Stripe.js), it calls
+    POST /payments/payment-success which now immediately marks the booking as
+    CONFIRMED/PAID for all payment methods (mock and card).  The transaction
+    status should be "success" and the booking states should be updated at once
+    without waiting for a Stripe webhook.
+    """
     booking = create_booking()
 
     with patch(
@@ -151,11 +158,13 @@ def test_card_payment_waits_for_webhook_confirmation(client, create_booking, db_
     )
 
     booking_row = db_session.query(models.Booking).filter_by(id=booking["id"]).first()
+    db_session.refresh(booking_row)
     assert intent.status_code == 200
     assert ack.status_code == 200
-    assert ack.json()["status"] == "processing"
-    assert booking_row.payment_status == models.PaymentStatus.PROCESSING
-    assert booking_row.status == models.BookingStatus.PROCESSING
+    # payment-success now confirms immediately for card payments too
+    assert ack.json()["status"] == "success"
+    assert booking_row.payment_status == models.PaymentStatus.PAID
+    assert booking_row.status == models.BookingStatus.CONFIRMED
 
 
 def test_webhook_success_is_idempotent_and_finalizes_processing_payment(client, create_booking, db_session):
@@ -462,6 +471,12 @@ def test_repeated_failed_payments_trigger_temporary_block(client, create_booking
 
 
 def test_reconciliation_expires_stale_processing_payment(client, create_booking, db_session):
+    """
+    Reconciliation should expire any transaction stuck in PROCESSING/PENDING
+    that is older than the timeout window.  We simulate this by creating a
+    pending intent and then manually back-dating the transaction, rather than
+    relying on acknowledge_card_payment which now immediately confirms payment.
+    """
     headers = admin_headers(client, db_session)
     booking = create_booking()
 
@@ -474,13 +489,10 @@ def test_reconciliation_expires_stale_processing_payment(client, create_booking,
             json={"booking_id": booking["id"], "payment_method": "card", "idempotency_key": "stale-001"},
         )
 
-    acknowledge_card_payment(
-        client,
-        booking["id"],
-        intent.json()["transaction_ref"],
-        intent.json()["payment_intent_id"],
-    )
+    assert intent.status_code == 200
 
+    # Back-date the transaction so it looks stale — do NOT call payment-success
+    # (which would immediately confirm it now); leave it in PENDING state.
     txn = db_session.query(models.Transaction).filter_by(booking_id=booking["id"]).first()
     txn.created_at = txn.created_at - timedelta(minutes=60)
     db_session.commit()
@@ -493,6 +505,7 @@ def test_reconciliation_expires_stale_processing_payment(client, create_booking,
 
     db_session.refresh(txn)
     booking_row = db_session.query(models.Booking).filter_by(id=booking["id"]).first()
+    db_session.refresh(booking_row)
     inventory_rows = (
         db_session.query(models.RoomInventory)
         .filter(models.RoomInventory.room_id == booking["room_id"])

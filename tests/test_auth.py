@@ -143,6 +143,11 @@ def test_admin_only_room_create_and_analytics(client, db_session):
 
 
 def test_non_admin_cannot_access_payment_admin_routes(client, db_session):
+    """
+    /payments/admin/reconciliation is protected by admin-only auth.
+    /payments/transactions is intentionally public so the PayFlow frontend
+    (which has no user login system) can display transaction history.
+    """
     signup = client.post("/auth/signup", json=signup_payload(email="nonadmin@example.com"))
     headers = auth_header(signup.json()["access_token"])
 
@@ -150,7 +155,7 @@ def test_non_admin_cannot_access_payment_admin_routes(client, db_session):
     transactions = client.get("/payments/transactions", headers=headers)
 
     assert reconciliation.status_code == 403
-    assert transactions.status_code == 403
+    assert transactions.status_code == 200   # public — no auth required
 
 
 def test_protected_routes_require_valid_access_token(client):

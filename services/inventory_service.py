@@ -166,6 +166,32 @@ def release_inventory_for_booking(db, *, booking: models.Booking) -> int:
     return len(rows)
 
 
+def is_booking_inventory_locked(db, *, booking: models.Booking) -> bool:
+    """Return True if every stay date for this booking has a non-expired lock
+    specifically assigned to it.  Unlike is_inventory_available, this function
+    checks for the *existing* lock rather than whether a brand-new lock could be
+    acquired, so it is safe to call during payment processing."""
+    now = utc_now()
+    for stay_date in iter_stay_dates(booking.check_in, booking.check_out):
+        row = (
+            db.query(models.RoomInventory)
+            .filter(
+                models.RoomInventory.room_id == booking.room_id,
+                models.RoomInventory.inventory_date == stay_date,
+            )
+            .first()
+        )
+        if not row or row.locked_by_booking_id != booking.id:
+            return False
+        lock_exp = row.lock_expires_at
+        if lock_exp is None:
+            return False
+        lock_exp = normalize_datetime_for_compare(lock_exp, now)
+        if lock_exp <= now:
+            return False
+    return True
+
+
 def upsert_inventory_range(
     db,
     *,

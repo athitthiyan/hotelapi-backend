@@ -13,7 +13,12 @@ from database import get_db, settings
 from routers.auth import get_current_admin
 from routers.bookings import expire_stale_booking_hold, release_expired_holds
 from services.audit_service import write_audit_log
-from services.inventory_service import confirm_inventory_for_booking, release_inventory_for_booking
+from services.inventory_service import (
+    confirm_inventory_for_booking,
+    is_booking_inventory_locked,
+    lock_inventory_for_booking,
+    release_inventory_for_booking,
+)
 from services.notification_service import (
     queue_booking_cancellation_email,
     queue_booking_confirmation_email,
@@ -174,6 +179,32 @@ def ensure_booking_can_accept_payment(db: Session, booking: models.Booking) -> m
             status_code=429,
             detail="Payment attempts temporarily blocked due to repeated failures",
         )
+
+    # Revalidate that THIS booking still holds its inventory lock.
+    # This closes the gap where an external cleanup process released the lock
+    # while the booking hold window was still open.
+    if not is_booking_inventory_locked(db, booking=booking):
+        now = datetime.now(timezone.utc)
+        hold_exp = booking.hold_expires_at
+        if hold_exp is not None and hold_exp.tzinfo is None:
+            hold_exp = hold_exp.replace(tzinfo=timezone.utc)
+        if hold_exp and hold_exp > now:
+            # Hold is still valid but the inventory row was released externally.
+            # Try to re-acquire the lock and continue.
+            try:
+                lock_inventory_for_booking(db, booking=booking, lock_expires_at=hold_exp)
+                db.commit()
+            except ValueError:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Dates are no longer available — inventory was released",
+                )
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail="Booking hold has expired — please start a new booking",
+            )
+
     return booking
 
 

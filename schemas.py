@@ -187,6 +187,17 @@ class BookingListResponse(BaseModel):
     total: int
 
 
+class UnavailableDatesResponse(BaseModel):
+    """Dates for a specific room that cannot be booked.
+
+    * ``unavailable_dates`` — fully confirmed / permanently blocked dates.
+    * ``held_dates`` — temporarily locked by an active inventory hold; may
+      become free once the hold expires.
+    """
+    unavailable_dates: List[str]  # ISO date strings, e.g. "2026-05-10"
+    held_dates: List[str]
+
+
 # ─── Payment Schemas ──────────────────────────────────────────────────────────
 
 class CreatePaymentIntent(BaseModel):

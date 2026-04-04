@@ -25,7 +25,7 @@ from services.notification_service import (
 
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
 
-BOOKING_HOLD_MINUTES = 15
+BOOKING_HOLD_MINUTES = 10
 
 
 def utc_now() -> datetime:
@@ -257,6 +257,93 @@ def get_booking_history(
     )
 
     return {"bookings": bookings, "total": len(bookings)}
+
+
+@router.get("/resumable", response_model=schemas.BookingResponse)
+def get_resumable_booking(
+    room_id: int = Query(..., gt=0),
+    check_in: datetime = Query(...),
+    check_out: datetime = Query(...),
+    email: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    """Return an existing PENDING booking for the same room/dates/email if its hold
+    has not yet expired — allows the frontend to reuse the booking ID for retry payment."""
+    release_expired_holds(db, room_id=room_id)
+    now = utc_now()
+    booking = (
+        db.query(models.Booking)
+        .options(joinedload(models.Booking.room))
+        .filter(
+            models.Booking.room_id == room_id,
+            models.Booking.email == email,
+            models.Booking.check_in == check_in,
+            models.Booking.check_out == check_out,
+            models.Booking.status == models.BookingStatus.PENDING,
+            models.Booking.payment_status != models.PaymentStatus.PAID,
+            models.Booking.hold_expires_at.is_not(None),
+            models.Booking.hold_expires_at > now,
+        )
+        .order_by(models.Booking.created_at.desc())
+        .first()
+    )
+    if not booking:
+        raise HTTPException(status_code=404, detail="No resumable booking found")
+    return booking
+
+
+class ExtendHoldRequest(schemas.BaseModel):
+    email: str
+
+
+@router.post("/{booking_id}/extend-hold", response_model=schemas.BookingResponse)
+def extend_booking_hold(
+    booking_id: int,
+    payload: ExtendHoldRequest,
+    db: Session = Depends(get_db),
+):
+    """Re-lock inventory and extend the hold window for a booking whose hold has expired
+    or is about to expire. The caller must supply the original booking email to prevent
+    unauthorised extensions."""
+    from services.inventory_service import lock_inventory_for_booking  # already imported at top; explicit here for clarity
+
+    booking = get_booking_or_404(db, booking_id)
+
+    # Email guard — prevents anyone with just a booking_id from extending a hold
+    if booking.email.lower() != payload.email.strip().lower():
+        raise HTTPException(status_code=403, detail="Email does not match booking")
+
+    if booking.payment_status == models.PaymentStatus.PAID:
+        raise HTTPException(status_code=409, detail="Booking is already paid")
+    if booking.status in [models.BookingStatus.CONFIRMED, models.BookingStatus.CANCELLED]:
+        raise HTTPException(status_code=409, detail="Booking cannot be extended in its current state")
+
+    # Release any stale locks for this room then recheck availability
+    release_expired_holds(db, room_id=booking.room_id)
+    release_expired_inventory_locks(db, room_id=booking.room_id)
+
+    if has_active_booking_overlap(
+        db, booking.room_id, booking.check_in, booking.check_out,
+        exclude_booking_id=booking_id,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="These dates are no longer available — another booking was confirmed",
+        )
+
+    new_expiry = utc_now() + timedelta(minutes=BOOKING_HOLD_MINUTES)
+
+    try:
+        lock_inventory_for_booking(db, booking=booking, lock_expires_at=new_expiry)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    booking.hold_expires_at = new_expiry
+    booking.status = models.BookingStatus.PENDING
+    booking.payment_status = models.PaymentStatus.PENDING
+    db.commit()
+    db.refresh(booking)
+    return get_booking_or_404(db, booking_id)
 
 
 @router.get("/{booking_id}", response_model=schemas.BookingResponse)

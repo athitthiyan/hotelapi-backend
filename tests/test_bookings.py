@@ -295,3 +295,193 @@ def test_booking_creation_rejects_invalid_phone_number(client, room_id):
     )
 
     assert response.status_code == 422
+
+
+# ─── Resumable booking ────────────────────────────────────────────────────────
+
+def test_resumable_booking_found(client, room_id):
+    """A PENDING booking with a non-expired hold should be returned."""
+    created = client.post("/bookings", json=booking_payload(room_id)).json()
+    params = {
+        "room_id": room_id,
+        "check_in": created["check_in"],
+        "check_out": created["check_out"],
+        "email": "athit@example.com",
+    }
+    response = client.get("/bookings/resumable", params=params)
+    assert response.status_code == 200
+    assert response.json()["id"] == created["id"]
+    assert response.json()["booking_ref"] == created["booking_ref"]
+
+
+def test_resumable_booking_not_found_wrong_email(client, room_id):
+    """A different email should not return a resumable booking."""
+    created = client.post("/bookings", json=booking_payload(room_id)).json()
+    params = {
+        "room_id": room_id,
+        "check_in": created["check_in"],
+        "check_out": created["check_out"],
+        "email": "stranger@example.com",
+    }
+    response = client.get("/bookings/resumable", params=params)
+    assert response.status_code == 404
+
+
+def test_resumable_booking_not_found_no_booking(client, room_id):
+    """No booking exists → 404."""
+    now = datetime.now(timezone.utc)
+    params = {
+        "room_id": room_id,
+        "check_in": now.isoformat(),
+        "check_out": (now + timedelta(days=2)).isoformat(),
+        "email": "nobody@example.com",
+    }
+    response = client.get("/bookings/resumable", params=params)
+    assert response.status_code == 404
+
+
+def test_resumable_booking_expired_hold_not_returned(client, db_session, room_id):
+    """An expired hold must NOT be returned as resumable."""
+    created = client.post("/bookings", json=booking_payload(room_id)).json()
+
+    # Manually expire the hold
+    booking = db_session.query(models.Booking).filter_by(id=created["id"]).first()
+    booking.hold_expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db_session.commit()
+
+    params = {
+        "room_id": room_id,
+        "check_in": created["check_in"],
+        "check_out": created["check_out"],
+        "email": "athit@example.com",
+    }
+    response = client.get("/bookings/resumable", params=params)
+    assert response.status_code == 404
+
+
+# ─── Extend hold ─────────────────────────────────────────────────────────────
+
+def test_extend_hold_success(client, db_session, room_id):
+    """Successfully extend a hold after it expired when dates are still free."""
+    created = client.post("/bookings", json=booking_payload(room_id)).json()
+
+    # Expire the hold manually
+    booking = db_session.query(models.Booking).filter_by(id=created["id"]).first()
+    booking.hold_expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    booking.status = models.BookingStatus.EXPIRED
+    booking.payment_status = models.PaymentStatus.EXPIRED
+    db_session.commit()
+
+    # Release inventory locks (simulates what the cron/cleanup would do)
+    from services.inventory_service import release_inventory_for_booking
+    release_inventory_for_booking(db_session, booking=booking)
+    db_session.commit()
+
+    response = client.post(
+        f"/bookings/{created['id']}/extend-hold",
+        json={"email": "athit@example.com"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "pending"
+    assert body["payment_status"] == "pending"
+    assert body["hold_expires_at"] is not None
+    # New expiry should be in the future (handle both naive and aware ISO strings)
+    from datetime import datetime as _dt
+    raw = body["hold_expires_at"].replace("Z", "+00:00")
+    new_exp = _dt.fromisoformat(raw)
+    if new_exp.tzinfo is None:
+        new_exp = new_exp.replace(tzinfo=timezone.utc)
+    assert new_exp > datetime.now(timezone.utc)
+
+
+def test_extend_hold_email_mismatch(client, room_id):
+    """Wrong email → 403."""
+    created = client.post("/bookings", json=booking_payload(room_id)).json()
+    response = client.post(
+        f"/bookings/{created['id']}/extend-hold",
+        json={"email": "wrong@example.com"},
+    )
+    assert response.status_code == 403
+    assert "Email" in response.json()["detail"]
+
+
+def test_extend_hold_already_paid(client, db_session, room_id):
+    """A paid booking cannot have its hold extended."""
+    created = client.post("/bookings", json=booking_payload(room_id)).json()
+    booking = db_session.query(models.Booking).filter_by(id=created["id"]).first()
+    booking.payment_status = models.PaymentStatus.PAID
+    booking.status = models.BookingStatus.CONFIRMED
+    db_session.commit()
+
+    response = client.post(
+        f"/bookings/{created['id']}/extend-hold",
+        json={"email": "athit@example.com"},
+    )
+    assert response.status_code == 409
+    assert "already paid" in response.json()["detail"]
+
+
+def test_extend_hold_dates_taken_by_confirmed_booking(client, db_session, room_id):
+    """If another confirmed booking grabbed the dates, extend-hold returns 409."""
+    now = datetime.now(timezone.utc)
+    check_in = now.isoformat()
+    check_out = (now + timedelta(days=2)).isoformat()
+
+    # Create original booking then expire its hold
+    original = client.post("/bookings", json=booking_payload(room_id)).json()
+    booking = db_session.query(models.Booking).filter_by(id=original["id"]).first()
+    booking.hold_expires_at = now - timedelta(minutes=1)
+    booking.status = models.BookingStatus.EXPIRED
+    db_session.commit()
+
+    from services.inventory_service import release_inventory_for_booking
+    release_inventory_for_booking(db_session, booking=booking)
+    db_session.commit()
+
+    # Second booking grabs the same dates and gets confirmed
+    other_payload = {
+        **booking_payload(room_id, check_in=check_in, check_out=check_out),
+        "email": "other@example.com",
+    }
+    other = client.post("/bookings", json=other_payload).json()
+    assert other.get("id"), f"Second booking failed: {other}"
+    other_booking = db_session.query(models.Booking).filter_by(id=other["id"]).first()
+    other_booking.status = models.BookingStatus.CONFIRMED
+    db_session.commit()
+
+    # Attempt to extend-hold the original booking → should fail
+    response = client.post(
+        f"/bookings/{original['id']}/extend-hold",
+        json={"email": "athit@example.com"},
+    )
+    assert response.status_code == 409
+
+
+# ─── Race condition ───────────────────────────────────────────────────────────
+
+def test_race_condition_two_simultaneous_bookings(client, room_id):
+    """Only one of two simultaneous booking attempts for the same dates should succeed."""
+    now = datetime.now(timezone.utc)
+    payload_a = booking_payload(
+        room_id,
+        check_in=now.isoformat(),
+        check_out=(now + timedelta(days=2)).isoformat(),
+        email="user_a@example.com",
+    )
+    payload_b = {
+        **booking_payload(
+            room_id,
+            check_in=now.isoformat(),
+            check_out=(now + timedelta(days=2)).isoformat(),
+        ),
+        "email": "user_b@example.com",
+    }
+
+    resp_a = client.post("/bookings", json=payload_a)
+    resp_b = client.post("/bookings", json=payload_b)
+
+    statuses = {resp_a.status_code, resp_b.status_code}
+    # One must succeed (201) and one must fail (409)
+    assert 201 in statuses, "At least one booking should succeed"
+    assert 409 in statuses, "At least one booking should be rejected as a conflict"
