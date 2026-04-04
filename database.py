@@ -45,7 +45,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("APP_ENV", "app_env", "ENVIRONMENT", "environment"),
     )
     allowed_origins: str = Field(
-        default="http://localhost:4200,https://stayease-booking-app.vercel.app,https://payflow-payment-app.vercel.app,https://insightboard-admin.vercel.app",
+        default="http://localhost:4200,https://stayease-booking-app-git-main-athitthiyans-projects.vercel.app,https://payflow-payment-app.vercel.app,https://insightboard-admin.vercel.app",
         validation_alias=AliasChoices("ALLOWED_ORIGINS", "allowed_origins"),
     )
     access_token_exp_minutes: int = Field(
