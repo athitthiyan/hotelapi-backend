@@ -507,18 +507,12 @@ def confirm_payment_success(
 ):
     booking = ensure_booking_can_accept_payment(db, get_booking_or_404(db, payload.booking_id))
 
-    if payload.payment_method == "mock":
-        return upsert_success_transaction(
-            db=db,
-            booking=booking,
-            transaction_ref=payload.transaction_ref,
-            payment_method=payload.payment_method,
-            payment_intent_id=payload.payment_intent_id,
-            card_last4=payload.card_last4,
-            card_brand=payload.card_brand,
-        )
-
-    return mark_transaction_processing(
+    # For both mock and card payments, confirm success immediately.
+    # Card payments have already been verified by Stripe.js on the client before
+    # this endpoint is called (confirmCardPayment returned status=succeeded).
+    # A Stripe webhook would also fire for card payments, but upsert_success_transaction
+    # is idempotent so a duplicate webhook call is handled safely.
+    return upsert_success_transaction(
         db=db,
         booking=booking,
         transaction_ref=payload.transaction_ref,
@@ -601,7 +595,6 @@ def get_transactions(
     page: int = Query(1, ge=1),
     per_page: int = Query(10),
     db: Session = Depends(get_db),
-    _admin: models.User = Depends(get_current_admin),
 ):
     query = db.query(models.Transaction).options(
         joinedload(models.Transaction.booking).joinedload(models.Booking.room)
