@@ -460,3 +460,194 @@ class InventoryResponse(BaseModel):
 class InventoryListResponse(BaseModel):
     inventory: List[InventoryResponse]
     total: int
+
+
+# ─── User Profile ─────────────────────────────────────────────────────────────
+
+class UserProfileUpdate(BaseModel):
+    full_name: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    phone: Optional[str] = Field(default=None, max_length=30)
+    avatar_url: Optional[str] = Field(default=None, max_length=500)
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: Optional[str]) -> Optional[str]:
+        if value is None or value.strip() == "":
+            return value
+        cleaned = value.strip()
+        if not re.fullmatch(r"[0-9+\-\s()]{7,30}", cleaned):
+            raise ValueError("Phone number format is invalid")
+        return cleaned
+
+
+class UserDetailResponse(BaseModel):
+    id: int
+    email: EmailStr
+    full_name: str
+    phone: Optional[str] = None
+    avatar_url: Optional[str] = None
+    is_admin: bool
+    is_active: bool
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+# ─── Auth Extensions ──────────────────────────────────────────────────────────
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=32, max_length=256)
+    new_password: str = Field(min_length=10, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password_strength(cls, value: str) -> str:
+        has_upper = any(c.isupper() for c in value)
+        has_lower = any(c.islower() for c in value)
+        has_digit = any(c.isdigit() for c in value)
+        if not (has_upper and has_lower and has_digit):
+            raise ValueError(
+                "Password must include uppercase, lowercase, and numeric characters"
+            )
+        return value
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=10, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password_strength(cls, value: str) -> str:
+        has_upper = any(c.isupper() for c in value)
+        has_lower = any(c.islower() for c in value)
+        has_digit = any(c.isdigit() for c in value)
+        if not (has_upper and has_lower and has_digit):
+            raise ValueError(
+                "Password must include uppercase, lowercase, and numeric characters"
+            )
+        return value
+
+
+class SocialLoginRequest(BaseModel):
+    provider: str  # "google"
+    id_token: str  # Google ID token
+
+
+class MessageResponse(BaseModel):
+    message: str
+
+
+# ─── Review Schemas ───────────────────────────────────────────────────────────
+
+class ReviewCreate(BaseModel):
+    room_id: int = Field(gt=0)
+    booking_id: int = Field(gt=0)
+    rating: int = Field(ge=1, le=5)
+    cleanliness_rating: Optional[int] = Field(default=None, ge=1, le=5)
+    service_rating: Optional[int] = Field(default=None, ge=1, le=5)
+    value_rating: Optional[int] = Field(default=None, ge=1, le=5)
+    location_rating: Optional[int] = Field(default=None, ge=1, le=5)
+    title: Optional[str] = Field(default=None, max_length=200)
+    body: Optional[str] = Field(default=None, max_length=2000)
+
+
+class HostReplyRequest(BaseModel):
+    reply: str = Field(min_length=2, max_length=1000)
+
+
+class ReviewResponse(BaseModel):
+    id: int
+    user_id: int
+    room_id: int
+    booking_id: int
+    rating: int
+    cleanliness_rating: Optional[int] = None
+    service_rating: Optional[int] = None
+    value_rating: Optional[int] = None
+    location_rating: Optional[int] = None
+    title: Optional[str] = None
+    body: Optional[str] = None
+    is_verified: bool
+    host_reply: Optional[str] = None
+    host_replied_at: Optional[datetime] = None
+    reviewer_name: str = ""
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ReviewListResponse(BaseModel):
+    reviews: List[ReviewResponse]
+    total: int
+    average_rating: float
+    rating_breakdown: dict
+
+
+class RatingBreakdown(BaseModel):
+    average_rating: float
+    total_reviews: int
+    cleanliness_avg: Optional[float] = None
+    service_avg: Optional[float] = None
+    value_avg: Optional[float] = None
+    location_avg: Optional[float] = None
+    five_star: int = 0
+    four_star: int = 0
+    three_star: int = 0
+    two_star: int = 0
+    one_star: int = 0
+
+
+# ─── Wishlist Schemas ─────────────────────────────────────────────────────────
+
+class WishlistToggleResponse(BaseModel):
+    saved: bool
+    message: str
+
+
+class WishlistItemResponse(BaseModel):
+    id: int
+    room_id: int
+    room: Optional[RoomResponse] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class WishlistResponse(BaseModel):
+    items: List[WishlistItemResponse]
+    total: int
+
+
+class WishlistStatusResponse(BaseModel):
+    room_ids: List[int]
+
+
+# ─── Availability Calendar ────────────────────────────────────────────────────
+
+class AvailabilityDay(BaseModel):
+    date: str  # ISO date string YYYY-MM-DD
+    available: bool
+    price: Optional[float] = None
+
+
+class AvailabilityCalendarResponse(BaseModel):
+    room_id: int
+    calendar: List[AvailabilityDay]
+
+
+# ─── My Bookings ─────────────────────────────────────────────────────────────
+
+class MyBookingsResponse(BaseModel):
+    bookings: List[BookingResponse]
+    total: int
+    upcoming: int
+    past: int
+    cancelled: int

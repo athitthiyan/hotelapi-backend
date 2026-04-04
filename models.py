@@ -1,4 +1,16 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, Enum, Date
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Float,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Text,
+    Enum,
+    Date,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -61,11 +73,17 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(200), unique=True, index=True, nullable=False)
     full_name = Column(String(100), nullable=False)
-    hashed_password = Column(String(255), nullable=False)
+    hashed_password = Column(String(255), nullable=True)  # nullable for social-only accounts
+    phone = Column(String(30))
+    avatar_url = Column(String(500))
+    google_id = Column(String(128), unique=True, index=True)
     is_admin = Column(Boolean, default=False, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    reviews = relationship("Review", back_populates="user")
+    wishlists = relationship("Wishlist", back_populates="user")
 
 
 class Room(Base):
@@ -103,6 +121,8 @@ class Room(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     bookings = relationship("Booking", back_populates="room")
+    reviews = relationship("Review", back_populates="room")
+    wishlists = relationship("Wishlist", back_populates="room")
 
 
 class Booking(Base):
@@ -237,3 +257,59 @@ class AuditLog(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     actor = relationship("User")
+
+
+class Review(Base):
+    __tablename__ = "reviews"
+    __table_args__ = (
+        UniqueConstraint("booking_id", name="uq_reviews_booking_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    room_id = Column(Integer, ForeignKey("rooms.id"), nullable=False, index=True)
+    booking_id = Column(Integer, ForeignKey("bookings.id"), nullable=False)
+    rating = Column(Integer, nullable=False)            # overall 1-5
+    cleanliness_rating = Column(Integer)                # 1-5 sub-ratings
+    service_rating = Column(Integer)
+    value_rating = Column(Integer)
+    location_rating = Column(Integer)
+    title = Column(String(200))
+    body = Column(Text)
+    is_verified = Column(Boolean, default=False, nullable=False)
+    host_reply = Column(Text)
+    host_replied_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    user = relationship("User", back_populates="reviews")
+    room = relationship("Room", back_populates="reviews")
+    booking = relationship("Booking")
+
+
+class Wishlist(Base):
+    __tablename__ = "wishlists"
+    __table_args__ = (
+        UniqueConstraint("user_id", "room_id", name="uq_wishlists_user_room"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    room_id = Column(Integer, ForeignKey("rooms.id"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="wishlists")
+    room = relationship("Room", back_populates="wishlists")
+
+
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User")

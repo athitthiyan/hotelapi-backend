@@ -155,3 +155,208 @@ def refresh_token(payload: schemas.RefreshTokenRequest, db: Session = Depends(ge
 @router.get("/me", response_model=schemas.UserResponse)
 def read_me(user: models.User = Depends(get_current_user)):
     return user
+
+
+# ─── Profile ──────────────────────────────────────────────────────────────────
+
+@router.put("/me", response_model=schemas.UserDetailResponse)
+def update_profile(
+    payload: schemas.UserProfileUpdate,
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if payload.full_name is not None:
+        user.full_name = payload.full_name
+    if payload.phone is not None:
+        user.phone = payload.phone
+    if payload.avatar_url is not None:
+        user.avatar_url = payload.avatar_url
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.post("/change-password", response_model=schemas.MessageResponse)
+def change_password(
+    payload: schemas.ChangePasswordRequest,
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not user.hashed_password or not verify_password(payload.current_password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    user.hashed_password = hash_password(payload.new_password)
+    db.commit()
+    return schemas.MessageResponse(message="Password changed successfully")
+
+
+# ─── Forgot / Reset Password ───────────────────────────────────────────────────
+
+import hashlib
+import secrets
+
+
+def _hash_reset_token(raw_token: str) -> str:
+    return hashlib.sha256(raw_token.encode()).hexdigest()
+
+
+@router.post("/forgot-password", response_model=schemas.MessageResponse)
+def forgot_password(
+    payload: schemas.ForgotPasswordRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    enforce_rate_limit("auth:forgot-password", request, subject=payload.email.lower())
+    user = db.query(models.User).filter(models.User.email == payload.email.lower()).first()
+    # Always return 200 to prevent email enumeration
+    if user and user.is_active:
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = _hash_reset_token(raw_token)
+        from datetime import timedelta, timezone
+        expires_at = utc_now() + timedelta(hours=1)
+        # Invalidate previous tokens for this user
+        db.query(models.PasswordResetToken).filter(
+            models.PasswordResetToken.user_id == user.id,
+            models.PasswordResetToken.used_at == None,  # noqa: E711
+        ).delete()
+        reset_token = models.PasswordResetToken(
+            user_id=user.id,
+            token_hash=token_hash,
+            expires_at=expires_at,
+        )
+        db.add(reset_token)
+        db.commit()
+        # In production: send email with reset link containing raw_token
+        # For now the raw token is returned in the response body for dev testing
+        import logging
+        logging.getLogger(__name__).info(
+            "Password reset requested for %s — token (dev only): %s", user.email, raw_token
+        )
+    return schemas.MessageResponse(
+        message="If that email exists, a reset link has been sent."
+    )
+
+
+@router.post("/reset-password", response_model=schemas.MessageResponse)
+def reset_password(
+    payload: schemas.ResetPasswordRequest,
+    db: Session = Depends(get_db),
+):
+    token_hash = _hash_reset_token(payload.token)
+    record = (
+        db.query(models.PasswordResetToken)
+        .filter(
+            models.PasswordResetToken.token_hash == token_hash,
+            models.PasswordResetToken.used_at == None,  # noqa: E711
+            models.PasswordResetToken.expires_at > utc_now(),
+        )
+        .first()
+    )
+    if not record:
+        raise HTTPException(status_code=400, detail="Reset token is invalid or has expired")
+    user = db.query(models.User).filter(models.User.id == record.user_id).first()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=400, detail="User account is not available")
+    user.hashed_password = hash_password(payload.new_password)
+    record.used_at = utc_now()
+    db.commit()
+    return schemas.MessageResponse(message="Password has been reset successfully")
+
+
+# ─── Social Login (Google) ────────────────────────────────────────────────────
+
+import httpx as _httpx
+
+GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
+
+
+@router.post("/social-login", response_model=schemas.TokenResponse)
+async def social_login(
+    payload: schemas.SocialLoginRequest,
+    db: Session = Depends(get_db),
+):
+    if payload.provider != "google":
+        raise HTTPException(status_code=400, detail="Only 'google' provider is supported")
+    async with _httpx.AsyncClient(timeout=10) as client:
+        try:
+            resp = await client.get(
+                GOOGLE_USERINFO_URL,
+                headers={"Authorization": f"Bearer {payload.id_token}"},
+            )
+        except _httpx.RequestError as exc:
+            raise HTTPException(status_code=502, detail="Failed to verify Google token") from exc
+    if resp.status_code != 200:
+        raise HTTPException(status_code=401, detail="Google token verification failed")
+    google_data = resp.json()
+    google_id: str = google_data.get("sub", "")
+    email: str = google_data.get("email", "")
+    full_name: str = google_data.get("name", email.split("@")[0])
+    avatar_url: str | None = google_data.get("picture")
+    if not google_id or not email:
+        raise HTTPException(status_code=400, detail="Insufficient data from Google")
+    # Find or create user
+    user = db.query(models.User).filter(models.User.google_id == google_id).first()
+    if not user:
+        user = db.query(models.User).filter(models.User.email == email.lower()).first()
+        if user:
+            user.google_id = google_id
+            if avatar_url and not user.avatar_url:
+                user.avatar_url = avatar_url
+        else:
+            user = models.User(
+                email=email.lower(),
+                full_name=full_name,
+                google_id=google_id,
+                avatar_url=avatar_url,
+                hashed_password=None,
+                is_admin=False,
+                is_active=True,
+            )
+            db.add(user)
+        db.commit()
+        db.refresh(user)
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="User account is inactive")
+    return build_token_response(user)
+
+
+# ─── My Bookings ──────────────────────────────────────────────────────────────
+
+@router.get("/me/bookings", response_model=schemas.MyBookingsResponse)
+def my_bookings(
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from sqlalchemy.orm import joinedload
+    bookings = (
+        db.query(models.Booking)
+        .options(joinedload(models.Booking.room))
+        .filter(models.Booking.email == user.email)
+        .order_by(models.Booking.created_at.desc())
+        .all()
+    )
+    from datetime import timezone as _tz
+    now = datetime.now(_tz.utc)
+    upcoming = sum(
+        1 for b in bookings
+        if b.status == models.BookingStatus.CONFIRMED
+        and b.check_out.replace(tzinfo=_tz.utc if b.check_out.tzinfo is None else b.check_out.tzinfo) >= now
+    )
+    past = sum(
+        1 for b in bookings
+        if b.status == models.BookingStatus.COMPLETED
+        or (
+            b.status == models.BookingStatus.CONFIRMED
+            and b.check_out.replace(tzinfo=_tz.utc if b.check_out.tzinfo is None else b.check_out.tzinfo) < now
+        )
+    )
+    cancelled = sum(
+        1 for b in bookings
+        if b.status in (models.BookingStatus.CANCELLED, models.BookingStatus.EXPIRED)
+    )
+    return schemas.MyBookingsResponse(
+        bookings=bookings,
+        total=len(bookings),
+        upcoming=upcoming,
+        past=past,
+        cancelled=cancelled,
+    )

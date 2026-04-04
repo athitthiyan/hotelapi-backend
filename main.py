@@ -8,7 +8,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from database import Base, SessionLocal, engine, settings, validate_runtime_configuration
-from routers import analytics, auth, bookings, notifications, ops, payments, rooms
+from routers import analytics, auth, bookings, notifications, ops, payments, reviews, rooms, wishlist
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,8 @@ app.include_router(analytics.router)
 app.include_router(auth.router)
 app.include_router(notifications.router)
 app.include_router(ops.router)
+app.include_router(reviews.router)
+app.include_router(wishlist.router)
 
 
 @app.get("/", tags=["Health"])
