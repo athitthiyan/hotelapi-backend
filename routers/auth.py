@@ -129,6 +129,17 @@ def get_current_user(
     return get_user_from_payload(db, payload)
 
 
+def get_optional_current_user(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> models.User | None:
+    if not authorization:
+        return None
+    token = get_bearer_token(authorization)
+    payload = decode_token(token, "access")
+    return get_user_from_payload(db, payload)
+
+
 def get_current_admin(user: models.User = Depends(get_current_user)) -> models.User:
     if not user.is_admin:
         raise HTTPException(

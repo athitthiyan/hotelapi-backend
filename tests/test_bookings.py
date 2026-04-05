@@ -217,7 +217,7 @@ def test_create_booking_blocks_overlapping_active_reservations(client, create_bo
 
 def test_create_booking_blocks_multiple_active_holds_for_same_logged_in_user(client, db_session, room_id):
     headers = user_headers(client, db_session)
-    client.post("/bookings", json=booking_payload(room_id))
+    client.post("/bookings", json=booking_payload(room_id), headers=headers)
 
     response = client.post(
         "/bookings",
@@ -226,6 +226,7 @@ def test_create_booking_blocks_multiple_active_holds_for_same_logged_in_user(cli
             check_in=(datetime.now(timezone.utc) + timedelta(days=4)).isoformat(),
             check_out=(datetime.now(timezone.utc) + timedelta(days=6)).isoformat(),
         ),
+        headers=headers,
     )
 
     assert response.status_code == 409
@@ -236,6 +237,47 @@ def test_create_booking_blocks_multiple_active_holds_for_same_logged_in_user(cli
     active_hold = client.get("/bookings/active-hold", headers=headers)
     assert active_hold.status_code == 200
     assert active_hold.json()["booking_id"] > 0
+
+
+def test_create_booking_uses_authenticated_user_for_active_hold_lookup_when_email_differs(
+    client,
+    db_session,
+    room_id,
+):
+    headers = user_headers(client, db_session, email="owner@example.com")
+
+    create_response = client.post(
+        "/bookings",
+        json=booking_payload(room_id, email="guest.alias@example.com"),
+        headers=headers,
+    )
+
+    assert create_response.status_code == 201
+    created_booking = db_session.query(models.Booking).filter_by(id=create_response.json()["id"]).first()
+    assert created_booking is not None
+    assert created_booking.user_id is not None
+    assert created_booking.email == "guest.alias@example.com"
+    assert created_booking.user.email == "owner@example.com"
+
+    active_hold = client.get("/bookings/active-hold", headers=headers)
+    assert active_hold.status_code == 200
+    assert active_hold.json()["booking_id"] == created_booking.id
+
+
+def test_create_booking_guest_flow_preserves_unlinked_booking_when_email_has_no_user(
+    client,
+    db_session,
+    room_id,
+):
+    response = client.post(
+        "/bookings",
+        json=booking_payload(room_id, email="guest.only@example.com"),
+    )
+
+    assert response.status_code == 201
+    created_booking = db_session.query(models.Booking).filter_by(id=response.json()["id"]).first()
+    assert created_booking is not None
+    assert created_booking.user_id is None
 
 
 def test_expired_booking_hold_is_released_for_new_reservation(client, create_booking, db_session, room_id):

@@ -12,7 +12,12 @@ import schemas
 import error_codes
 from error_codes import booking_error
 from database import get_db
-from routers.auth import get_current_admin, get_current_user, normalize_email
+from routers.auth import (
+    get_current_admin,
+    get_current_user,
+    get_optional_current_user,
+    normalize_email,
+)
 from services.inventory_service import (
     lock_inventory_for_booking,
     release_expired_inventory_locks,
@@ -197,7 +202,11 @@ def get_booking_or_404(db: Session, booking_id: int) -> models.Booking:
 
 
 @router.post("", response_model=schemas.BookingResponse, status_code=201)
-def create_booking(booking_data: schemas.BookingCreate, db: Session = Depends(get_db)):
+def create_booking(
+    booking_data: schemas.BookingCreate,
+    db: Session = Depends(get_db),
+    current_user: Optional[models.User] = Depends(get_optional_current_user),
+):
     room = db.query(models.Room).filter(models.Room.id == booking_data.room_id).first()
     if not room:
         raise booking_error(
@@ -263,12 +272,13 @@ def create_booking(booking_data: schemas.BookingCreate, db: Session = Depends(ge
         .filter(models.User.email == normalized_email, models.User.is_active.is_(True))
         .first()
     )
+    booking_owner = current_user or linked_user
     release_expired_holds(db, room_id=booking_data.room_id)
     release_expired_inventory_locks(db, room_id=booking_data.room_id)
 
     # Logged-in/known users may only have one active booking hold at a time.
-    if linked_user:
-        existing_user_hold = get_latest_active_hold_for_user(db, linked_user, now=now)
+    if booking_owner:
+        existing_user_hold = get_latest_active_hold_for_user(db, booking_owner, now=now)
         if existing_user_hold:
             raise booking_error(
                 status_code=409,
@@ -311,7 +321,7 @@ def create_booking(booking_data: schemas.BookingCreate, db: Session = Depends(ge
         booking_ref=generate_booking_ref(),
         user_name=booking_data.user_name,
         email=normalized_email,
-        user_id=linked_user.id if linked_user else None,
+        user_id=booking_owner.id if booking_owner else None,
         phone=booking_data.phone,
         room_id=booking_data.room_id,
         check_in=check_in,
