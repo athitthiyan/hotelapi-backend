@@ -22,31 +22,37 @@ from __future__ import annotations
 import pytest
 from unittest.mock import MagicMock, patch
 
-from database import Settings, validate_runtime_configuration, get_db
+import database
+from database import Settings, validate_runtime_configuration
 
 
 # ─── Settings.normalize_database_url ─────────────────────────────────────────
 
 class TestNormalizeDatabaseUrl:
     def test_postgres_prefix_replaced(self):
-        s = Settings(database_url="postgres://user:pass@host/db")
-        assert s.database_url.startswith("postgresql://")
-        assert "postgres://user" not in s.database_url
+        normalized = Settings.normalize_database_url("postgres://user:pass@host/db")
+        assert normalized.startswith("postgresql://")
+        assert "postgres://user" not in normalized
 
     def test_postgresql_prefix_unchanged(self):
-        s = Settings(database_url="postgresql://user:pass@host/db")
-        assert s.database_url == "postgresql://user:pass@host/db"
+        normalized = Settings.normalize_database_url("postgresql://user:pass@host/db")
+        assert normalized == "postgresql://user:pass@host/db"
 
     def test_sqlite_url_unchanged(self):
-        s = Settings(database_url="sqlite:///test.db")
-        assert s.database_url == "sqlite:///test.db"
+        normalized = Settings.normalize_database_url("sqlite:///test.db")
+        assert normalized == "sqlite:///test.db"
 
 
 # ─── validate_runtime_configuration ──────────────────────────────────────────
 
 class TestValidateRuntimeConfiguration:
-    def _settings_with(self, env: str, secret: str) -> Settings:
-        return Settings(database_url="sqlite:///test.db", app_env=env, secret_key=secret)
+    class ConfigStub:
+        def __init__(self, env: str, secret: str):
+            self.app_env = env
+            self.secret_key = secret
+
+    def _settings_with(self, env: str, secret: str) -> "TestValidateRuntimeConfiguration.ConfigStub":
+        return self.ConfigStub(env, secret)
 
     def test_non_production_returns_immediately(self):
         """app_env != 'production' → early return; even insecure key is allowed."""
@@ -93,8 +99,8 @@ class TestGetDb:
         mock_session = MagicMock()
         mock_session_local = MagicMock(return_value=mock_session)
 
-        with patch("database.SessionLocal", mock_session_local):
-            gen = get_db()
+        with patch.object(database, "SessionLocal", mock_session_local):
+            gen = database.get_db()
             session = next(gen)
             assert session is mock_session
             # Exhaust the generator (triggers the finally block)
@@ -109,8 +115,8 @@ class TestGetDb:
         mock_session = MagicMock()
         mock_session_local = MagicMock(return_value=mock_session)
 
-        with patch("database.SessionLocal", mock_session_local):
-            gen = get_db()
+        with patch.object(database, "SessionLocal", mock_session_local):
+            gen = database.get_db()
             next(gen)  # yield db
             with pytest.raises(RuntimeError):
                 gen.throw(RuntimeError("simulated error"))

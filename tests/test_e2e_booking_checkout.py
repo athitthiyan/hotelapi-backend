@@ -1,4 +1,5 @@
 from unittest.mock import patch
+from unittest.mock import MagicMock
 
 from routers.auth import hash_password
 
@@ -7,6 +8,10 @@ import models
 
 def auth_header(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
+
+
+def webhook_headers() -> dict:
+    return {"stripe-signature": "test-signature"}
 
 
 def create_admin_headers(client, db_session) -> dict:
@@ -26,6 +31,32 @@ def create_admin_headers(client, db_session) -> dict:
     )
     assert login.status_code == 200
     return auth_header(login.json()["access_token"])
+
+
+def send_webhook_success(client, booking_id: int, payment_intent_id: str, transaction_ref: str):
+    event = {
+        "type": "payment_intent.succeeded",
+        "data": {
+            "object": {
+                "id": payment_intent_id,
+                "metadata": {
+                    "booking_id": str(booking_id),
+                    "transaction_ref": transaction_ref,
+                },
+                "charges": {
+                    "data": [
+                        {
+                            "payment_method_details": {
+                                "card": {"last4": "4242", "brand": "visa"}
+                            }
+                        }
+                    ]
+                },
+            }
+        },
+    }
+    with patch("routers.payments.stripe.Webhook.construct_event", return_value=event):
+        return client.post("/payments/webhook", headers=webhook_headers(), content=b"{}")
 
 
 def test_e2e_customer_booking_to_confirmation_flow(client, db_session):
@@ -205,6 +236,14 @@ def test_e2e_card_decline_then_retry_success_flow(client, create_booking, db_ses
         },
     )
     assert success.status_code == 200
+
+    webhook = send_webhook_success(
+        client,
+        booking["id"],
+        second_intent.json()["payment_intent_id"],
+        second_intent.json()["transaction_ref"],
+    )
+    assert webhook.status_code == 200
 
     payment_status = client.get(f"/payments/status/{booking['id']}")
     booking_by_ref = client.get(f"/bookings/ref/{booking['booking_ref']}")

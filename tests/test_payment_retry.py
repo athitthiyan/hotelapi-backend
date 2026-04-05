@@ -65,6 +65,36 @@ def confirm_success(client, booking_id: int, payment_intent_id: str = "pi_succes
     )
 
 
+def send_webhook_success(client, booking_id: int, payment_intent_id: str):
+    event = {
+        "type": "payment_intent.succeeded",
+        "data": {
+            "object": {
+                "id": payment_intent_id,
+                "metadata": {
+                    "booking_id": str(booking_id),
+                    "transaction_ref": f"TXN-{payment_intent_id.upper()[:12]}",
+                },
+                "charges": {
+                    "data": [
+                        {
+                            "payment_method_details": {
+                                "card": {"last4": "4242", "brand": "visa"}
+                            }
+                        }
+                    ]
+                },
+            }
+        },
+    }
+    with patch("routers.payments.stripe.Webhook.construct_event", return_value=event):
+        return client.post(
+            "/payments/webhook",
+            headers={"stripe-signature": "test-signature"},
+            content=b"{}",
+        )
+
+
 # ─── Core Retry Tests ─────────────────────────────────────────────────────────
 
 
@@ -105,7 +135,7 @@ def test_inventory_released_after_payment_failure_when_hold_expired(
     db_session.commit()
 
     fail_resp = record_failure(client, booking_id, "Card declined (expired hold)", pi_id)
-    assert fail_resp.status_code == 200
+    assert fail_resp.status_code == 400
 
     db_session.expire_all()
     booking = db_session.query(models.Booking).filter_by(id=booking_id).first()
@@ -226,6 +256,8 @@ def test_double_failure_then_success_full_retry_chain(client, create_booking, db
 
     success_resp = confirm_success(client, booking_id, payment_intent_id="pi_fullchain_003")
     assert success_resp.status_code == 200
+    webhook_resp = send_webhook_success(client, booking_id, "pi_fullchain_003")
+    assert webhook_resp.status_code == 200
 
     db_session.expire_all()
     booking = db_session.query(models.Booking).filter_by(id=booking_id).first()

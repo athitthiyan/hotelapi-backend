@@ -336,10 +336,9 @@ def test_analytics_recent_bookings_and_revenue_stats(client, db_session):
     create_booking_and_transaction(db_session, success_room, success=True)
     create_booking_and_transaction(db_session, failed_room, success=False)
 
-    with patch("routers.analytics.cast", side_effect=lambda value, _type: value):
-        analytics = client.get("/analytics", headers=headers, params={"days": 30})
-        recent = client.get("/analytics/recent-bookings", headers=headers, params={"limit": 5})
-        revenue = client.get("/analytics/revenue-stats", headers=headers)
+    analytics = client.get("/analytics", headers=headers, params={"days": 30})
+    recent = client.get("/analytics/recent-bookings", headers=headers, params={"limit": 5})
+    revenue = client.get("/analytics/revenue-stats", headers=headers)
 
     assert analytics.status_code == 200
     analytics_body = analytics.json()

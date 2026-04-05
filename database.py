@@ -7,7 +7,11 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+        populate_by_name=True,
+    )
 
     database_url: str = Field(
         validation_alias=AliasChoices("DATABASE_URL", "database_url")
