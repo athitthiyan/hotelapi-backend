@@ -5,6 +5,15 @@ from datetime import date, datetime
 from enum import Enum
 
 
+# ─── Error Response ───────────────────────────────────────────────────────────
+
+class ApiError(BaseModel):
+    """Structured error response body returned alongside HTTP error status codes."""
+    code: str
+    message: str
+    field: Optional[str] = None
+
+
 # ─── Enums ────────────────────────────────────────────────────────────────────
 
 class RoomType(str, Enum):

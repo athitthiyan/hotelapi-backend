@@ -1,6 +1,9 @@
+import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+import httpx as _httpx
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy import or_
@@ -209,10 +212,6 @@ def change_password(
 
 # ─── Forgot / Reset Password ───────────────────────────────────────────────────
 
-import hashlib
-import secrets
-
-
 def _hash_reset_token(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode()).hexdigest()
 
@@ -281,8 +280,6 @@ def reset_password(
 
 
 # ─── Social Login (Google) ────────────────────────────────────────────────────
-
-import httpx as _httpx
 
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
 

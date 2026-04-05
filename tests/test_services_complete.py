@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from collections import deque
 from datetime import date, datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from sqlalchemy import create_engine
@@ -143,7 +143,6 @@ class TestRateLimitService:
         assert "unknown" in key
 
     def test_enforce_allows_up_to_limit(self):
-        from fastapi import HTTPException
         from services.rate_limit_service import enforce_rate_limit, RATE_LIMITS
         req = self._make_request()
         limit, _ = RATE_LIMITS["auth:signup"]

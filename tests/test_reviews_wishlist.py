@@ -11,14 +11,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-os.environ.setdefault("DATABASE_URL", "sqlite:///./test_bootstrap.db")
-
 import models
 from database import Base, get_db
 from routers import auth, bookings, payments, reviews, rooms, wishlist
 from services.rate_limit_service import reset_rate_limits
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+os.environ.setdefault("DATABASE_URL", "sqlite:///./test_bootstrap.db")
 
 
 @pytest.fixture()

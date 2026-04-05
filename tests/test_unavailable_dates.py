@@ -73,7 +73,7 @@ def test_active_hold_appears_in_held_dates(client, db_session, room_id):
     check_in = now
     check_out = now + timedelta(days=2)
 
-    booking_data = _create_booking(client, room_id, check_in, check_out)
+    _create_booking(client, room_id, check_in, check_out)
 
     response = client.get(
         f"/rooms/{room_id}/unavailable-dates",
@@ -251,7 +251,6 @@ def test_race_condition_second_booking_sees_conflict(client, room_id):
     assert second_resp.status_code == 409
 
     # After first hold expires, second attempt should succeed
-    db_first = None  # acquired indirectly through client — reset via API is not possible in test
     # Just verify the conflict response body contains useful info
     assert "reserved" in second_resp.json()["detail"].lower() or \
            "available" in second_resp.json()["detail"].lower() or \

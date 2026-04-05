@@ -6,16 +6,12 @@ wrong token type, admin guard, refresh, and helper functions.
 
 from __future__ import annotations
 
-from datetime import timedelta
-
 import pytest
 
 import models
 from routers.auth import (
     hash_password,
     verify_password,
-    create_token,
-    build_token_response,
     decode_token,
     get_bearer_token,
     get_user_from_payload,
@@ -261,7 +257,7 @@ class TestAdminGuard:
         assert r.json()["detail"] == "Admin access required"
 
     def test_admin_can_access_admin_routes(self, client, db_session):
-        admin = create_admin(db_session)
+        create_admin(db_session)
         login = client.post("/auth/login", json={"email": "admin@example.com", "password": "AdminPass123"})
         headers = auth_header(login.json()["access_token"])
 

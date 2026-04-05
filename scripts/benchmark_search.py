@@ -18,11 +18,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import models
-from database import Base, get_db
-from routers import analytics, auth, bookings, notifications, ops, partner, payments, rooms
-from services.inventory_service import upsert_inventory_range
-from services.search_service import clear_search_cache
+import models  # noqa: E402
+from database import Base, get_db  # noqa: E402
+from routers import analytics, auth, bookings, notifications, ops, partner, payments, rooms  # noqa: E402
+from services.inventory_service import upsert_inventory_range  # noqa: E402
+from services.search_service import clear_search_cache  # noqa: E402
 
 
 @dataclass

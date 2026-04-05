@@ -18,12 +18,10 @@ Branches covered:
 
 from __future__ import annotations
 
-import pytest
 from datetime import datetime, timezone
 
 from routers.auth import hash_password
 import models
-from services.search_service import _search_cache  # to test cache HIT
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
@@ -423,7 +421,7 @@ class TestDeleteRoom:
         room = create_room_via_api(client, headers)
 
         # Create a user and make a booking for that room
-        signup = client.post("/auth/signup", json={
+        client.post("/auth/signup", json={
             "email": "booker@rooms.com",
             "full_name": "Booker",
             "password": "BookerPass123",

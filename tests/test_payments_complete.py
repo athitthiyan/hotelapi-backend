@@ -10,12 +10,9 @@ Covers every conditional branch including:
 
 from __future__ import annotations
 
-import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 import models
 from routers.auth import hash_password
@@ -27,7 +24,6 @@ from routers.payments import (
     get_card_details,
     has_recent_failed_payment_burst,
     generate_txn_ref,
-    build_payment_intent_response,
 )
 
 
@@ -840,7 +836,6 @@ class TestStripeWebhook:
         return data
 
     def test_webhook_invalid_payload_returns_400(self, client):
-        import stripe
         with patch(
             "routers.payments.stripe.Webhook.construct_event",
             side_effect=ValueError("Bad payload"),

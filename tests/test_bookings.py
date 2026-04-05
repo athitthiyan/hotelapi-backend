@@ -39,7 +39,9 @@ def admin_headers(client, db_session):
 def test_create_booking_room_not_found(client):
     response = client.post("/bookings", json=booking_payload(999999))
     assert response.status_code == 404
-    assert response.json()["detail"] == "Room not found"
+    detail = response.json()["detail"]
+    assert detail["code"] == "ROOM_NOT_FOUND"
+    assert "Room not found" in detail["message"]
 
 
 def test_create_booking_room_unavailable(client, db_session, room_id):
@@ -49,7 +51,9 @@ def test_create_booking_room_unavailable(client, db_session, room_id):
 
     response = client.post("/bookings", json=booking_payload(room_id))
     assert response.status_code == 400
-    assert response.json()["detail"] == "Room is not available"
+    detail = response.json()["detail"]
+    assert detail["code"] == "ROOM_UNAVAILABLE"
+    assert "not currently available" in detail["message"]
 
 
 def test_create_booking_invalid_checkout_before_checkin(client, room_id):
@@ -63,7 +67,9 @@ def test_create_booking_invalid_checkout_before_checkin(client, room_id):
         ),
     )
     assert response.status_code == 400
-    assert response.json()["detail"] == "Check-out must be after check-in"
+    detail = response.json()["detail"]
+    assert detail["code"] == "INVALID_DATE_RANGE"
+    assert "after check-in" in detail["message"]
 
 
 def test_create_booking_minimum_stay_validation(client, room_id):
@@ -77,7 +83,9 @@ def test_create_booking_minimum_stay_validation(client, room_id):
         ),
     )
     assert response.status_code == 400
-    assert response.json()["detail"] == "Check-out must be after check-in"
+    detail = response.json()["detail"]
+    assert detail["code"] == "INVALID_DATE_RANGE"
+    assert "after check-in" in detail["message"]
 
 
 def test_get_bookings_filters_by_email_and_status(client, create_booking, db_session):
@@ -139,8 +147,12 @@ def test_cancel_booking_success_and_already_cancelled_and_not_found(client, crea
     assert first.status_code == 200
     assert first.json()["status"] == "cancelled"
     assert second.status_code == 400
-    assert second.json()["detail"] == "Booking already cancelled"
+    detail_second = second.json()["detail"]
+    assert detail_second["code"] == "HOLD_EXPIRED"
+    assert "already been cancelled" in detail_second["message"]
     assert missing.status_code == 404
+    detail_missing = missing.json()["detail"]
+    assert detail_missing["code"] == "HOLD_NOT_FOUND"
 
 
 def test_create_booking_sets_hold_expiry(client, room_id):
@@ -181,7 +193,9 @@ def test_create_booking_blocks_overlapping_active_reservations(client, create_bo
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "Room is already reserved for the selected dates"
+    detail = response.json()["detail"]
+    assert detail["code"] == "HOLD_EXISTS"
+    assert "active booking hold" in detail["message"]
 
 
 def test_expired_booking_hold_is_released_for_new_reservation(client, create_booking, db_session, room_id):
@@ -227,7 +241,9 @@ def test_cancel_paid_booking_requires_refund_workflow(client, create_booking, db
     response = client.patch(f"/bookings/{created['id']}/cancel")
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "Paid bookings must use the refund or support workflow"
+    detail = response.json()["detail"]
+    assert detail["code"] == "PAYMENT_FAILED"
+    assert "refund workflow" in detail["message"]
 
 
 def test_cancelling_booking_releases_inventory_lock(client, create_booking, db_session):
@@ -403,7 +419,9 @@ def test_extend_hold_email_mismatch(client, room_id):
         json={"email": "wrong@example.com"},
     )
     assert response.status_code == 403
-    assert "Email" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail["code"] == "AUTH_REQUIRED"
+    assert "Email" in detail["message"]
 
 
 def test_extend_hold_already_paid(client, db_session, room_id):
@@ -419,7 +437,9 @@ def test_extend_hold_already_paid(client, db_session, room_id):
         json={"email": "athit@example.com"},
     )
     assert response.status_code == 409
-    assert "already paid" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail["code"] == "DUPLICATE_BOOKING"
+    assert "already been paid" in detail["message"]
 
 
 def test_extend_hold_dates_taken_by_confirmed_booking(client, db_session, room_id):

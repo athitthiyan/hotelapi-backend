@@ -11,10 +11,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta, timezone
 
-import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
 import models

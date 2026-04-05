@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session, joinedload
 
 import models
 import schemas
+import error_codes
+from error_codes import booking_error
 from database import get_db
 from routers.auth import get_current_admin, normalize_email
 from services.inventory_service import (
@@ -138,7 +140,11 @@ def get_booking_or_404(db: Session, booking_id: int) -> models.Booking:
         .first()
     )
     if not booking:
-        raise HTTPException(status_code=404, detail="Booking not found")
+        raise booking_error(
+            status_code=404,
+            code=error_codes.HOLD_NOT_FOUND,
+            message="Booking not found",
+        )
     return booking
 
 
@@ -146,32 +152,94 @@ def get_booking_or_404(db: Session, booking_id: int) -> models.Booking:
 def create_booking(booking_data: schemas.BookingCreate, db: Session = Depends(get_db)):
     room = db.query(models.Room).filter(models.Room.id == booking_data.room_id).first()
     if not room:
-        raise HTTPException(status_code=404, detail="Room not found")
+        raise booking_error(
+            status_code=404,
+            code=error_codes.ROOM_NOT_FOUND,
+            message="Room not found",
+        )
     if not room.availability:
-        raise HTTPException(status_code=400, detail="Room is not available")
+        raise booking_error(
+            status_code=400,
+            code=error_codes.ROOM_UNAVAILABLE,
+            message="This room is not currently available for booking",
+        )
 
     check_in = booking_data.check_in
     check_out = booking_data.check_out
     if check_out <= check_in:
-        raise HTTPException(status_code=400, detail="Check-out must be after check-in")
+        raise booking_error(
+            status_code=400,
+            code=error_codes.INVALID_DATE_RANGE,
+            message="Check-out date must be after check-in date",
+            field="check_out",
+        )
 
     nights = (check_out - check_in).days
     if nights < 1:
-        raise HTTPException(status_code=400, detail="Minimum stay is 1 night")
+        raise booking_error(
+            status_code=400,
+            code=error_codes.MINIMUM_STAY,
+            message="Minimum stay is 1 night",
+            field="check_out",
+        )
+
+    # Check if check-in is in the future
+    now = utc_now()
+    if check_in <= now:
+        raise booking_error(
+            status_code=400,
+            code=error_codes.CHECK_IN_PAST,
+            message="Check-in date must be in the future",
+            field="check_in",
+        )
+
+    # Check if guest count exceeds room capacity
+    if booking_data.guests > room.max_guests:
+        raise booking_error(
+            status_code=400,
+            code=error_codes.GUEST_CAPACITY_EXCEEDED,
+            message=f"This room accommodates a maximum of {room.max_guests} guests",
+            field="guests",
+        )
 
     normalized_email = normalize_email(booking_data.email)
     release_expired_holds(db, room_id=booking_data.room_id)
     release_expired_inventory_locks(db, room_id=booking_data.room_id)
-    if has_active_booking_overlap(db, booking_data.room_id, check_in, check_out):
-        raise HTTPException(
+
+    # Check for duplicate active hold (same room + overlapping dates + non-expired hold)
+    existing_hold = (
+        db.query(models.Booking)
+        .filter(
+            models.Booking.room_id == booking_data.room_id,
+            models.Booking.check_in < check_out,
+            models.Booking.check_out > check_in,
+            models.Booking.status == models.BookingStatus.PENDING,
+            models.Booking.payment_status != models.PaymentStatus.PAID,
+            models.Booking.hold_expires_at.is_not(None),
+            models.Booking.hold_expires_at > now,
+        )
+        .first()
+    )
+    if existing_hold:
+        raise booking_error(
             status_code=409,
-            detail="Room is already reserved for the selected dates",
+            code=error_codes.HOLD_EXISTS,
+            message="An active booking hold already exists for these dates. Please complete your existing reservation.",
+            field="date_range",
+        )
+
+    if has_active_booking_overlap(db, booking_data.room_id, check_in, check_out):
+        raise booking_error(
+            status_code=409,
+            code=error_codes.BOOKING_CONFLICT,
+            message="These dates are no longer available. Please choose different dates.",
+            field="date_range",
         )
 
     room_rate, taxes, service_fee, total = calculate_booking_amount(room, nights)
     linked_user = (
         db.query(models.User)
-        .filter(models.User.email == normalized_email, models.User.is_active == True)
+        .filter(models.User.email == normalized_email, models.User.is_active.is_(True))
         .first()
     )
 
@@ -205,7 +273,12 @@ def create_booking(booking_data: schemas.BookingCreate, db: Session = Depends(ge
         )
     except ValueError as exc:
         db.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise booking_error(
+            status_code=409,
+            code=error_codes.BOOKING_CONFLICT,
+            message="These dates are no longer available. Please choose different dates.",
+            field="date_range",
+        ) from exc
     queue_booking_hold_email(db, db_booking)
     db.commit()
     db.refresh(db_booking)
@@ -314,12 +387,24 @@ def extend_booking_hold(
 
     # Email guard — prevents anyone with just a booking_id from extending a hold
     if booking.email.lower() != payload.email.strip().lower():
-        raise HTTPException(status_code=403, detail="Email does not match booking")
+        raise booking_error(
+            status_code=403,
+            code=error_codes.AUTH_REQUIRED,
+            message="Email does not match booking record",
+        )
 
     if booking.payment_status == models.PaymentStatus.PAID:
-        raise HTTPException(status_code=409, detail="Booking is already paid")
+        raise booking_error(
+            status_code=409,
+            code=error_codes.DUPLICATE_BOOKING,
+            message="This booking has already been paid and confirmed",
+        )
     if booking.status in [models.BookingStatus.CONFIRMED, models.BookingStatus.CANCELLED]:
-        raise HTTPException(status_code=409, detail="Booking cannot be extended in its current state")
+        raise booking_error(
+            status_code=409,
+            code=error_codes.DUPLICATE_BOOKING,
+            message="This booking has already been paid and confirmed",
+        )
 
     # Release any stale locks for this room then recheck availability
     release_expired_holds(db, room_id=booking.room_id)
@@ -329,9 +414,10 @@ def extend_booking_hold(
         db, booking.room_id, booking.check_in, booking.check_out,
         exclude_booking_id=booking_id,
     ):
-        raise HTTPException(
+        raise booking_error(
             status_code=409,
-            detail="These dates are no longer available — another booking was confirmed",
+            code=error_codes.BOOKING_CONFLICT,
+            message="These dates are no longer available — another booking was confirmed",
         )
 
     new_expiry = utc_now() + timedelta(minutes=BOOKING_HOLD_MINUTES)
@@ -339,7 +425,11 @@ def extend_booking_hold(
     try:
         lock_inventory_for_booking(db, booking=booking, lock_expires_at=new_expiry)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise booking_error(
+            status_code=409,
+            code=error_codes.BOOKING_CONFLICT,
+            message="These dates are no longer available — another booking was confirmed",
+        ) from exc
 
     booking.hold_expires_at = new_expiry
     booking.status = models.BookingStatus.PENDING
@@ -376,21 +466,38 @@ def get_booking_by_ref(booking_ref: str, db: Session = Depends(get_db)):
 def cancel_booking(booking_id: int, db: Session = Depends(get_db)):
     booking = db.query(models.Booking).filter(models.Booking.id == booking_id).first()
     if not booking:
-        raise HTTPException(status_code=404, detail="Booking not found")
+        raise booking_error(
+            status_code=404,
+            code=error_codes.HOLD_NOT_FOUND,
+            message="Booking not found",
+        )
 
     if expire_stale_booking_hold(booking):
         db.commit()
         db.refresh(booking)
-        raise HTTPException(status_code=400, detail="Booking already expired")
+        raise booking_error(
+            status_code=400,
+            code=error_codes.HOLD_EXPIRED,
+            message="This booking hold has already expired",
+        )
 
     if booking.status == models.BookingStatus.CANCELLED:
-        raise HTTPException(status_code=400, detail="Booking already cancelled")
-    if booking.status == models.BookingStatus.EXPIRED:
-        raise HTTPException(status_code=400, detail="Booking already expired")
-    if booking.payment_status == models.PaymentStatus.PAID:
-        raise HTTPException(
+        raise booking_error(
             status_code=400,
-            detail="Paid bookings must use the refund or support workflow",
+            code=error_codes.HOLD_EXPIRED,
+            message="This booking has already been cancelled",
+        )
+    if booking.status == models.BookingStatus.EXPIRED:
+        raise booking_error(
+            status_code=400,
+            code=error_codes.HOLD_EXPIRED,
+            message="This booking hold has already expired",
+        )
+    if booking.payment_status == models.PaymentStatus.PAID:
+        raise booking_error(
+            status_code=400,
+            code=error_codes.PAYMENT_FAILED,
+            message="Paid bookings cannot be cancelled this way. Please use the refund workflow.",
         )
 
     booking.status = models.BookingStatus.CANCELLED

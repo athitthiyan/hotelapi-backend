@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import func, extract
 from datetime import datetime, timedelta
-import models, schemas
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import extract, func
+from sqlalchemy.orm import Session
+
+import models
+import schemas
 from database import get_db
 from routers.auth import get_current_admin
 

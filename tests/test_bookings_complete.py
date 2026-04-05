@@ -7,8 +7,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 import models
 from routers.auth import hash_password
 from routers.bookings import (
@@ -340,7 +338,7 @@ class TestGetBookingByRef:
         db_session.commit()
         db_session.refresh(booking)
 
-        r = client.get(f"/bookings/ref/BK-STALEREF1")
+        r = client.get("/bookings/ref/BK-STALEREF1")
         assert r.status_code == 200
         assert r.json()["status"] == "expired"
 

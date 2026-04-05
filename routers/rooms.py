@@ -1,9 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import case, func, or_
-from typing import Optional
 from datetime import date, datetime, timedelta, timezone
-import models, schemas
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import case, func, or_
+from sqlalchemy.orm import Session
+
+import models
+import schemas
 from database import get_db
 from routers.auth import get_current_admin
 from services.audit_service import write_audit_log
@@ -63,7 +66,7 @@ def get_rooms(
     if cached:
         return cached
 
-    room_query = db.query(models.Room).filter(models.Room.availability == True)
+    room_query = db.query(models.Room).filter(models.Room.availability.is_(True))
 
     if query:
         like_pattern = f"%{query}%"
@@ -88,7 +91,7 @@ def get_rooms(
     if guests:
         room_query = room_query.filter(models.Room.max_guests >= guests)
     if featured is not None:
-        room_query = room_query.filter(models.Room.is_featured == featured)
+        room_query = room_query.filter(models.Room.is_featured.is_(featured))
     if amenities:
         for amenity in [item.strip() for item in amenities.split(",") if item.strip()]:
             room_query = room_query.filter(models.Room.amenities.ilike(f"%{amenity}%"))
@@ -124,8 +127,8 @@ def get_rooms(
 @router.get("/featured", response_model=list[schemas.RoomResponse])
 def get_featured_rooms(limit: int = Query(6), db: Session = Depends(get_db)):
     return db.query(models.Room).filter(
-        models.Room.is_featured == True,
-        models.Room.availability == True
+        models.Room.is_featured.is_(True),
+        models.Room.availability.is_(True)
     ).limit(limit).all()
 
 
@@ -140,12 +143,12 @@ def get_destinations(
             models.Room.city.label("city"),
             models.Room.country.label("country"),
             func.count(models.Room.id).label("room_count"),
-            func.sum(case((models.Room.is_featured == True, 1), else_=0)).label(
+            func.sum(case((models.Room.is_featured.is_(True), 1), else_=0)).label(
                 "featured_count"
             ),
             func.avg(models.Room.price).label("average_price"),
         )
-        .filter(models.Room.availability == True)
+        .filter(models.Room.availability.is_(True))
         .group_by(models.Room.city, models.Room.country)
     )
 

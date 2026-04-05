@@ -3,7 +3,6 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -11,14 +10,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-os.environ.setdefault("DATABASE_URL", "sqlite:///./test_bootstrap.db")
-
 import models
 from database import Base, get_db
 from routers import auth, bookings, payments, rooms
 from services.rate_limit_service import reset_rate_limits
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+os.environ.setdefault("DATABASE_URL", "sqlite:///./test_bootstrap.db")
 
 
 @pytest.fixture()
@@ -114,7 +113,8 @@ class TestForgotPassword:
 class TestResetPassword:
     def _get_raw_token(self, app, email: str) -> str:
         """Insert a fresh token and return the raw value."""
-        import hashlib, secrets
+        import hashlib
+        import secrets
         raw = secrets.token_urlsafe(32)
         token_hash = hashlib.sha256(raw.encode()).hexdigest()
         db = app.state.testing_session_local()
@@ -153,7 +153,8 @@ class TestResetPassword:
         assert r.status_code == 400
 
     def test_reset_with_expired_token(self, client, app):
-        import hashlib, secrets
+        import hashlib
+        import secrets
         email = "expired@test.com"
         _signup_login(client, email)
 
@@ -177,7 +178,8 @@ class TestResetPassword:
         assert r.status_code == 400
 
     def test_reset_with_already_used_token(self, client, app):
-        import hashlib, secrets
+        import hashlib
+        import secrets
         email = "used@test.com"
         _signup_login(client, email)
 
