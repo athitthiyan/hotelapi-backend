@@ -11,5 +11,5 @@ env/
 .env.local
 *.log
 
-# Alembic
-alembic/versions/
+# Alembic - track migration files in git so Railway/CI can run them
+# alembic/versions/  ← removed; migration .py files must be version-controlled
