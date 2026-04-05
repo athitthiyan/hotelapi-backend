@@ -11,7 +11,6 @@ import models
 import schemas
 from database import get_db
 from routers.auth import get_current_admin, normalize_email
-from services.audit_service import write_audit_log
 from services.inventory_service import (
     lock_inventory_for_booking,
     release_expired_inventory_locks,
@@ -206,7 +205,7 @@ def create_booking(booking_data: schemas.BookingCreate, db: Session = Depends(ge
         )
     except ValueError as exc:
         db.rollback()
-        raise HTTPException(status_code=409, detail=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     queue_booking_hold_email(db, db_booking)
     db.commit()
     db.refresh(db_booking)
@@ -311,8 +310,6 @@ def extend_booking_hold(
     """Re-lock inventory and extend the hold window for a booking whose hold has expired
     or is about to expire. The caller must supply the original booking email to prevent
     unauthorised extensions."""
-    from services.inventory_service import lock_inventory_for_booking  # already imported at top; explicit here for clarity
-
     booking = get_booking_or_404(db, booking_id)
 
     # Email guard — prevents anyone with just a booking_id from extending a hold
@@ -342,7 +339,7 @@ def extend_booking_hold(
     try:
         lock_inventory_for_booking(db, booking=booking, lock_expires_at=new_expiry)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     booking.hold_expires_at = new_expiry
     booking.status = models.BookingStatus.PENDING

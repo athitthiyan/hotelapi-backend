@@ -18,11 +18,24 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Install ruff
-        run: pip install ruff
+      - name: Install lint dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff pylint
 
       - name: Ruff lint check
         run: ruff check . --output-format=github
+
+      - name: Pylint backend modules
+        run: |
+          pylint \
+            --rcfile=.pylintrc \
+            main.py \
+            database.py \
+            models.py \
+            schemas.py \
+            routers \
+            services
 
   test:
     name: Test (Python ${{ matrix.python-version }})
@@ -54,6 +67,7 @@ jobs:
         run: |
           python -m pytest \
             --cov=. \
+            --cov-branch \
             --cov-report=term-missing:skip-covered \
             --cov-report=xml:coverage.xml \
             --cov-fail-under=80 \

@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, extract, cast, Date
-from typing import Optional
 from datetime import datetime, timedelta
 import models, schemas
 from database import get_db
@@ -23,9 +22,6 @@ def get_analytics(
     # ── KPIs ──────────────────────────────────────────────────────────────────
     total_bookings = db.query(func.count(models.Booking.id)).scalar()
 
-    paid_transactions = db.query(models.Transaction).filter(
-        models.Transaction.status == models.TransactionStatus.SUCCESS
-    )
     total_revenue = db.query(
         func.coalesce(func.sum(models.Transaction.amount), 0)
     ).filter(

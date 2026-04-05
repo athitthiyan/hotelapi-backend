@@ -4,7 +4,7 @@ from typing import Optional
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import and_, or_
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 import models
@@ -194,11 +194,11 @@ def ensure_booking_can_accept_payment(db: Session, booking: models.Booking) -> m
             try:
                 lock_inventory_for_booking(db, booking=booking, lock_expires_at=hold_exp)
                 db.commit()
-            except ValueError:
+            except ValueError as exc:
                 raise HTTPException(
                     status_code=409,
                     detail="Dates are no longer available — inventory was released",
-                )
+                ) from exc
         else:
             raise HTTPException(
                 status_code=409,
@@ -573,7 +573,7 @@ def create_payment_intent(
         transaction.failure_reason = message
         apply_failed_state(booking)
         db.commit()
-        raise HTTPException(status_code=400, detail=message)
+        raise HTTPException(status_code=400, detail=message) from exc
 
 
 @router.post("/payment-success", response_model=schemas.TransactionResponse)
@@ -820,10 +820,10 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         event = stripe.Webhook.construct_event(
             payload, sig_header, settings.stripe_webhook_secret
         )
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid payload")
-    except stripe.error.SignatureVerificationError:
-        raise HTTPException(status_code=400, detail="Invalid signature")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid payload") from exc
+    except stripe.error.SignatureVerificationError as exc:
+        raise HTTPException(status_code=400, detail="Invalid signature") from exc
 
     if event["type"] == "payment_intent.succeeded":
         payment_intent = event["data"]["object"]

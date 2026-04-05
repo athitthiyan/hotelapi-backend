@@ -1,0 +1,35 @@
+[MAIN]
+persistent = no
+ignore = alembic,benchmarks,scripts,tests,__pycache__,.pytest_cache
+
+[MESSAGES CONTROL]
+disable =
+    duplicate-code,
+    import-outside-toplevel,
+    invalid-name,
+    line-too-long,
+    missing-class-docstring,
+    missing-function-docstring,
+    missing-module-docstring,
+    mixed-line-endings,
+    multiple-imports,
+    no-member,
+    not-callable,
+    redefined-outer-name,
+    reimported,
+    singleton-comparison,
+    too-many-branches,
+    too-few-public-methods,
+    too-many-arguments,
+    too-many-locals,
+    too-many-positional-arguments,
+    useless-return,
+    wrong-import-order,
+    wrong-import-position,
+    broad-exception-caught
+
+[FORMAT]
+max-line-length = 120
+
+[REPORTS]
+score = no

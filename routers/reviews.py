@@ -161,7 +161,7 @@ def create_review(
 def host_reply(
     review_id: int,
     payload: schemas.HostReplyRequest,
-    admin: models.User = Depends(get_current_admin),
+    _admin: models.User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     """Admin/host can reply to a review."""
@@ -198,7 +198,7 @@ def delete_review(
     db.commit()
 
 
-def _refresh_room_rating(db: Session, room_id: int, new_review: models.Review | None = None) -> None:
+def _refresh_room_rating(db: Session, room_id: int, _new_review: models.Review | None = None) -> None:
     """Recompute and persist the denormalised rating on the Room row."""
     agg = (
         db.query(func.avg(models.Review.rating), func.count(models.Review.id))

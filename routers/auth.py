@@ -229,7 +229,7 @@ def forgot_password(
     if user and user.is_active:
         raw_token = secrets.token_urlsafe(32)
         token_hash = _hash_reset_token(raw_token)
-        from datetime import timedelta, timezone
+        from datetime import timedelta
         expires_at = utc_now() + timedelta(hours=1)
         # Invalidate previous tokens for this user
         db.query(models.PasswordResetToken).filter(
