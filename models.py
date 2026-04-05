@@ -55,6 +55,15 @@ class TransactionStatus(str, enum.Enum):
     EXPIRED = "expired"
 
 
+class RefundStatus(str, enum.Enum):
+    REFUND_REQUESTED = "refund_requested"
+    REFUND_INITIATED = "refund_initiated"
+    REFUND_PROCESSING = "refund_processing"
+    REFUND_SUCCESS = "refund_success"
+    REFUND_FAILED = "refund_failed"
+    REFUND_REVERSED = "refund_reversed"
+
+
 class NotificationStatus(str, enum.Enum):
     PENDING = "pending"
     SENT = "sent"
@@ -208,6 +217,21 @@ class Booking(Base):
         ),
         default=PaymentStatus.PENDING,
     )
+    refund_status = Column(
+        Enum(
+            RefundStatus,
+            name="refund_status",
+            values_callable=enum_values,
+        ),
+        nullable=True,
+    )
+    refund_amount = Column(Float, default=0.0, nullable=False)
+    refund_requested_at = Column(DateTime(timezone=True))
+    refund_initiated_at = Column(DateTime(timezone=True))
+    refund_expected_settlement_at = Column(DateTime(timezone=True))
+    refund_completed_at = Column(DateTime(timezone=True))
+    refund_failed_reason = Column(String(500))
+    refund_gateway_reference = Column(String(120))
     special_requests = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

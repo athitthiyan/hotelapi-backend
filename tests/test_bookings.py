@@ -693,3 +693,36 @@ def test_support_request_requires_booking_owner(client, db_session, room_id):
     )
 
     assert response.status_code == 404
+
+
+def test_invoice_and_voucher_download_for_booking_owner(client, db_session, room_id):
+    headers = user_headers(client, db_session)
+    created = client.post("/bookings", json=booking_payload(room_id), headers=headers).json()
+    booking = db_session.query(models.Booking).filter_by(id=created["id"]).first()
+    booking.status = models.BookingStatus.CONFIRMED
+    booking.payment_status = models.PaymentStatus.PAID
+    db_session.commit()
+
+    invoice = client.get(f"/bookings/{created['id']}/invoice", headers=headers)
+    voucher = client.get(f"/bookings/{created['id']}/voucher", headers=headers)
+
+    assert invoice.status_code == 200
+    assert invoice.headers["content-type"].startswith("application/pdf")
+    assert b"Stayvora Tax Invoice" in invoice.content
+    assert created["booking_ref"].encode() in invoice.content
+    assert voucher.status_code == 200
+    assert voucher.headers["content-type"].startswith("application/pdf")
+    assert b"Stayvora Booking Voucher" in voucher.content
+
+
+def test_invoice_document_requires_access_or_matching_reference(client, db_session, room_id):
+    created = client.post("/bookings", json=booking_payload(room_id)).json()
+
+    forbidden = client.get(f"/bookings/{created['id']}/invoice")
+    by_reference = client.get(
+        f"/bookings/{created['id']}/invoice",
+        params={"booking_ref": created["booking_ref"]},
+    )
+
+    assert forbidden.status_code == 403
+    assert by_reference.status_code == 200

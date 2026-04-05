@@ -110,6 +110,59 @@ def test_booking_cancellation_queues_notification(client, create_booking, db_ses
     assert notifications[-1].event_type == "booking_cancelled"
 
 
+def test_refund_lifecycle_queues_initiated_success_and_failure_notifications(
+    client, create_booking, db_session
+):
+    headers = admin_headers(client, db_session)
+    booking = create_booking()
+    intent = client.post(
+        "/payments/create-payment-intent",
+        json={"booking_id": booking["id"], "payment_method": "mock", "idempotency_key": "notify-refund-001"},
+    )
+    success = client.post(
+        "/payments/payment-success",
+        json={
+            "booking_id": booking["id"],
+            "payment_intent_id": intent.json()["payment_intent_id"],
+            "transaction_ref": intent.json()["transaction_ref"],
+            "payment_method": "mock",
+        },
+    )
+
+    initiated = client.post(
+        "/payments/refund",
+        headers=headers,
+        json={"booking_id": booking["id"], "reason": "Refund initiated"},
+    )
+    failed = client.post(
+        f"/payments/refunds/{booking['id']}/fail",
+        headers=headers,
+        json={"reason": "Gateway issue"},
+    )
+    completed = client.post(
+        f"/payments/refunds/{booking['id']}/complete",
+        headers=headers,
+        json={"reason": "Refund settled", "gateway_reference": "RFND-NOTIFY-001"},
+    )
+
+    notifications = (
+        db_session.query(models.NotificationOutbox)
+        .filter(models.NotificationOutbox.booking_id == booking["id"])
+        .order_by(models.NotificationOutbox.id.asc())
+        .all()
+    )
+
+    assert success.status_code == 200
+    assert initiated.status_code == 200
+    assert failed.status_code == 200
+    assert completed.status_code == 200
+    assert [n.event_type for n in notifications][-3:] == [
+        "refund_initiated",
+        "refund_failed",
+        "refund_success",
+    ]
+
+
 def test_notification_outbox_processing_sent_and_failed_paths(client, db_session):
     headers = admin_headers(client, db_session)
     room = models.Room(

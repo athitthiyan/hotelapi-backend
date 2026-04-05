@@ -25,6 +25,9 @@ from services.notification_service import (
     queue_booking_confirmation_email,
     queue_payment_failure_email,
     queue_payment_receipt_email,
+    queue_refund_failure_email,
+    queue_refund_initiated_email,
+    queue_refund_success_email,
 )
 from services.rate_limit_service import enforce_rate_limit
 
@@ -33,6 +36,7 @@ router = APIRouter(prefix="/payments", tags=["Payments"])
 RECONCILIATION_TIMEOUT_MINUTES = 5
 FAILED_PAYMENT_BLOCK_WINDOW_MINUTES = 30
 FAILED_PAYMENT_BLOCK_THRESHOLD = 3
+REFUND_SETTLEMENT_DAYS = 5
 
 
 def ops_alert_recipient() -> str:
@@ -91,6 +95,147 @@ def queue_payment_ops_alert(
         event_type=event_type,
     )
 
+
+def build_refund_timeline(booking: models.Booking) -> schemas.RefundTimelineResponse:
+    if not booking.refund_status:
+        raise HTTPException(status_code=404, detail="Refund timeline not found")
+    return schemas.RefundTimelineResponse(
+        booking_id=booking.id,
+        booking_ref=booking.booking_ref,
+        refund_status=booking.refund_status,
+        refund_amount=booking.refund_amount,
+        requested_at=booking.refund_requested_at,
+        initiated_at=booking.refund_initiated_at,
+        expected_settlement_at=booking.refund_expected_settlement_at,
+        completed_at=booking.refund_completed_at,
+        failed_reason=booking.refund_failed_reason,
+        gateway_reference=booking.refund_gateway_reference,
+    )
+
+
+def get_refundable_booking_or_404(db: Session, booking_id: int) -> tuple[models.Booking, models.Transaction]:
+    booking = get_booking_or_404(db, booking_id)
+    if booking.payment_status not in [models.PaymentStatus.PAID, models.PaymentStatus.REFUNDED]:
+        raise HTTPException(status_code=400, detail="Only paid bookings can be refunded")
+
+    transaction = get_success_transaction_for_booking(db, booking.id)
+    if not transaction:
+        transaction = (
+            db.query(models.Transaction)
+            .filter(
+                models.Transaction.booking_id == booking.id,
+                models.Transaction.status == models.TransactionStatus.REFUNDED,
+            )
+            .order_by(models.Transaction.id.desc())
+            .first()
+        )
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Successful transaction not found")
+    return booking, transaction
+
+
+def ensure_refund_status(
+    booking: models.Booking,
+    allowed: set[models.RefundStatus | None],
+    message: str,
+) -> None:
+    if booking.refund_status not in allowed:
+        raise HTTPException(status_code=409, detail=message)
+
+
+def set_refund_requested(
+    booking: models.Booking,
+    *,
+    reason: str,
+    amount: Optional[float] = None,
+) -> None:
+    now = utc_now()
+    booking.refund_status = models.RefundStatus.REFUND_REQUESTED
+    booking.refund_amount = amount if amount is not None else booking.total_amount
+    booking.refund_requested_at = now
+    booking.refund_failed_reason = reason
+    booking.refund_completed_at = None
+    booking.refund_initiated_at = None
+    booking.refund_expected_settlement_at = None
+    booking.refund_gateway_reference = None
+
+
+def set_refund_initiated(
+    booking: models.Booking,
+    *,
+    reason: str,
+    amount: Optional[float] = None,
+    gateway_reference: Optional[str] = None,
+) -> None:
+    now = utc_now()
+    if not booking.refund_requested_at:
+        booking.refund_requested_at = now
+    booking.refund_status = models.RefundStatus.REFUND_INITIATED
+    booking.refund_initiated_at = now
+    booking.refund_expected_settlement_at = now + timedelta(days=REFUND_SETTLEMENT_DAYS)
+    booking.refund_completed_at = None
+    booking.refund_failed_reason = reason
+    booking.refund_amount = amount if amount is not None else booking.refund_amount or booking.total_amount
+    booking.refund_gateway_reference = gateway_reference or booking.refund_gateway_reference or f"RFND-{uuid.uuid4().hex[:10].upper()}"
+    booking.status = models.BookingStatus.CANCELLED
+
+
+def set_refund_processing(
+    booking: models.Booking,
+    *,
+    reason: str,
+    gateway_reference: Optional[str] = None,
+) -> None:
+    if not booking.refund_requested_at:
+        booking.refund_requested_at = utc_now()
+    booking.refund_status = models.RefundStatus.REFUND_PROCESSING
+    booking.refund_initiated_at = booking.refund_initiated_at or utc_now()
+    booking.refund_expected_settlement_at = utc_now() + timedelta(days=REFUND_SETTLEMENT_DAYS)
+    booking.refund_failed_reason = reason
+    booking.refund_gateway_reference = gateway_reference or booking.refund_gateway_reference
+    booking.status = models.BookingStatus.CANCELLED
+
+
+def set_refund_failed(
+    booking: models.Booking,
+    *,
+    reason: str,
+    gateway_reference: Optional[str] = None,
+) -> None:
+    booking.refund_status = models.RefundStatus.REFUND_FAILED
+    booking.refund_failed_reason = reason
+    booking.refund_gateway_reference = gateway_reference or booking.refund_gateway_reference
+    booking.status = models.BookingStatus.CANCELLED
+
+
+def set_refund_success(
+    booking: models.Booking,
+    transaction: models.Transaction,
+    *,
+    gateway_reference: Optional[str] = None,
+) -> None:
+    booking.refund_status = models.RefundStatus.REFUND_SUCCESS
+    booking.refund_completed_at = utc_now()
+    booking.refund_failed_reason = None
+    booking.refund_gateway_reference = gateway_reference or booking.refund_gateway_reference
+    booking.payment_status = models.PaymentStatus.REFUNDED
+    booking.status = models.BookingStatus.CANCELLED
+    transaction.status = models.TransactionStatus.REFUNDED
+    transaction.failure_reason = None
+
+
+def set_refund_reversed(
+    booking: models.Booking,
+    transaction: models.Transaction,
+    *,
+    reason: str,
+) -> None:
+    booking.refund_status = models.RefundStatus.REFUND_REVERSED
+    booking.refund_failed_reason = reason
+    booking.payment_status = models.PaymentStatus.PAID
+    booking.status = models.BookingStatus.CANCELLED
+    transaction.status = models.TransactionStatus.SUCCESS
+    transaction.failure_reason = None
 
 def get_booking_or_404(db: Session, booking_id: int) -> models.Booking:
     booking = (
@@ -878,47 +1023,254 @@ def get_transaction(
     return txn
 
 
+@router.get("/refunds/{booking_id}", response_model=schemas.RefundTimelineResponse)
+def get_refund_timeline(
+    booking_id: int,
+    db: Session = Depends(get_db),
+    _admin: models.User = Depends(get_current_admin),
+):
+    booking = get_booking_or_404(db, booking_id)
+    return build_refund_timeline(booking)
+
+
+@router.post("/refunds/request", response_model=schemas.RefundAdminActionResponse)
+def request_refund(
+    payload: schemas.RefundRequest,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    booking, transaction = get_refundable_booking_or_404(db, payload.booking_id)
+    ensure_refund_status(
+        booking,
+        {None, models.RefundStatus.REFUND_FAILED, models.RefundStatus.REFUND_REVERSED},
+        "Refund request is already active for this booking",
+    )
+    set_refund_requested(booking, reason=payload.reason)
+    write_payment_audit(
+        db,
+        actor_user_id=admin.id,
+        action="payment.refund.requested",
+        booking=booking,
+        transaction=transaction,
+        metadata={"reason": payload.reason},
+    )
+    db.commit()
+    db.refresh(booking)
+    return schemas.RefundAdminActionResponse(
+        message="Refund requested successfully",
+        timeline=build_refund_timeline(booking),
+    )
+
+
+@router.post("/refunds/{booking_id}/initiate", response_model=schemas.RefundAdminActionResponse)
+def initiate_refund(
+    booking_id: int,
+    payload: schemas.RefundAdminActionRequest,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    booking, transaction = get_refundable_booking_or_404(db, booking_id)
+    ensure_refund_status(
+        booking,
+        {None, models.RefundStatus.REFUND_REQUESTED, models.RefundStatus.REFUND_FAILED, models.RefundStatus.REFUND_REVERSED},
+        "Refund can only be initiated from a requested, failed, or reversed state",
+    )
+    set_refund_initiated(
+        booking,
+        reason=payload.reason,
+        amount=payload.amount,
+        gateway_reference=payload.gateway_reference,
+    )
+    release_inventory_for_booking(db, booking=booking)
+    queue_booking_cancellation_email(db, booking)
+    queue_refund_initiated_email(db, booking)
+    write_payment_audit(
+        db,
+        actor_user_id=admin.id,
+        action="payment.refund.initiated",
+        booking=booking,
+        transaction=transaction,
+        metadata={
+            "reason": payload.reason,
+            "gateway_reference": booking.refund_gateway_reference,
+        },
+    )
+    db.commit()
+    db.refresh(booking)
+    return schemas.RefundAdminActionResponse(
+        message="Refund initiated successfully",
+        timeline=build_refund_timeline(booking),
+    )
+
+
+@router.post("/refunds/{booking_id}/retry", response_model=schemas.RefundAdminActionResponse)
+def retry_failed_refund(
+    booking_id: int,
+    payload: schemas.RefundAdminActionRequest,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    booking, transaction = get_refundable_booking_or_404(db, booking_id)
+    ensure_refund_status(
+        booking,
+        {models.RefundStatus.REFUND_FAILED},
+        "Only failed refunds can be retried",
+    )
+    set_refund_processing(
+        booking,
+        reason=payload.reason,
+        gateway_reference=payload.gateway_reference,
+    )
+    queue_refund_initiated_email(db, booking)
+    write_payment_audit(
+        db,
+        actor_user_id=admin.id,
+        action="payment.refund.retried",
+        booking=booking,
+        transaction=transaction,
+        metadata={"reason": payload.reason},
+    )
+    db.commit()
+    db.refresh(booking)
+    return schemas.RefundAdminActionResponse(
+        message="Refund retry started",
+        timeline=build_refund_timeline(booking),
+    )
+
+
+@router.post("/refunds/{booking_id}/fail", response_model=schemas.RefundAdminActionResponse)
+def fail_refund(
+    booking_id: int,
+    payload: schemas.RefundAdminActionRequest,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    booking, transaction = get_refundable_booking_or_404(db, booking_id)
+    ensure_refund_status(
+        booking,
+        {
+            models.RefundStatus.REFUND_REQUESTED,
+            models.RefundStatus.REFUND_INITIATED,
+            models.RefundStatus.REFUND_PROCESSING,
+        },
+        "Only active refund requests can be marked failed",
+    )
+    set_refund_failed(
+        booking,
+        reason=payload.reason,
+        gateway_reference=payload.gateway_reference,
+    )
+    queue_refund_failure_email(db, booking)
+    write_payment_audit(
+        db,
+        actor_user_id=admin.id,
+        action="payment.refund.failed",
+        booking=booking,
+        transaction=transaction,
+        metadata={"reason": payload.reason},
+    )
+    db.commit()
+    db.refresh(booking)
+    return schemas.RefundAdminActionResponse(
+        message="Refund marked as failed",
+        timeline=build_refund_timeline(booking),
+    )
+
+
+@router.post("/refunds/{booking_id}/complete", response_model=schemas.RefundAdminActionResponse)
+def complete_refund(
+    booking_id: int,
+    payload: schemas.RefundAdminActionRequest,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    booking, transaction = get_refundable_booking_or_404(db, booking_id)
+    ensure_refund_status(
+        booking,
+        {
+            models.RefundStatus.REFUND_REQUESTED,
+            models.RefundStatus.REFUND_INITIATED,
+            models.RefundStatus.REFUND_PROCESSING,
+            models.RefundStatus.REFUND_FAILED,
+        },
+        "Refund can only be completed from an active or failed refund state",
+    )
+    if not booking.refund_initiated_at:
+        set_refund_initiated(
+            booking,
+            reason=payload.reason,
+            amount=payload.amount,
+            gateway_reference=payload.gateway_reference,
+        )
+    set_refund_success(
+        booking,
+        transaction,
+        gateway_reference=payload.gateway_reference,
+    )
+    queue_refund_success_email(db, booking)
+    write_payment_audit(
+        db,
+        actor_user_id=admin.id,
+        action="payment.refund.completed",
+        booking=booking,
+        transaction=transaction,
+        metadata={"gateway_reference": booking.refund_gateway_reference},
+    )
+    db.commit()
+    db.refresh(booking)
+    return schemas.RefundAdminActionResponse(
+        message="Refund completed successfully",
+        timeline=build_refund_timeline(booking),
+    )
+
+
+@router.post("/refunds/{booking_id}/reverse", response_model=schemas.RefundAdminActionResponse)
+def reverse_refund(
+    booking_id: int,
+    payload: schemas.RefundAdminActionRequest,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin),
+):
+    booking, transaction = get_refundable_booking_or_404(db, booking_id)
+    ensure_refund_status(
+        booking,
+        {models.RefundStatus.REFUND_SUCCESS},
+        "Only completed refunds can be reversed",
+    )
+    set_refund_reversed(booking, transaction, reason=payload.reason)
+    write_payment_audit(
+        db,
+        actor_user_id=admin.id,
+        action="payment.refund.reversed",
+        booking=booking,
+        transaction=transaction,
+        metadata={"reason": payload.reason},
+    )
+    db.commit()
+    db.refresh(booking)
+    return schemas.RefundAdminActionResponse(
+        message="Refund reversed successfully",
+        timeline=build_refund_timeline(booking),
+    )
+
+
 @router.post("/refund")
 def refund_payment(
     payload: schemas.RefundRequest,
     db: Session = Depends(get_db),
     admin: models.User = Depends(get_current_admin),
 ):
-    booking = get_booking_or_404(db, payload.booking_id)
-    if booking.payment_status != models.PaymentStatus.PAID:
-        raise HTTPException(status_code=400, detail="Only paid bookings can be refunded")
-
-    transaction = get_success_transaction_for_booking(db, booking.id)
-    if not transaction:
-        raise HTTPException(status_code=404, detail="Successful transaction not found")
-
-    transaction.status = models.TransactionStatus.REFUNDED
-    transaction.failure_reason = payload.reason
-    booking.payment_status = models.PaymentStatus.REFUNDED
-    booking.status = models.BookingStatus.CANCELLED
-    release_inventory_for_booking(db, booking=booking)
-    queue_booking_cancellation_email(db, booking)
-    write_payment_audit(
-        db,
-        actor_user_id=admin.id,
-        action="payment.refund.recorded",
-        booking=booking,
-        transaction=transaction,
-        metadata={"reason": payload.reason},
+    response = initiate_refund(
+        booking_id=payload.booking_id,
+        payload=schemas.RefundAdminActionRequest(reason=payload.reason),
+        db=db,
+        admin=admin,
     )
-    write_audit_log(
-        db,
-        actor_user_id=admin.id,
-        action="payment.refund",
-        entity_type="booking",
-        entity_id=booking.id,
-        metadata={"transaction_ref": transaction.transaction_ref, "reason": payload.reason},
-    )
-    db.commit()
     return {
         "message": "Refund recorded successfully",
-        "booking_id": booking.id,
-        "transaction_ref": transaction.transaction_ref,
+        "booking_id": response.timeline.booking_id,
+        "transaction_ref": response.timeline.gateway_reference,
+        "refund_status": response.timeline.refund_status.value,
     }
 
 

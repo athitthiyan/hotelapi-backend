@@ -115,6 +115,49 @@ def queue_booking_cancellation_email(
     )
 
 
+def queue_refund_initiated_email(db, booking: models.Booking) -> models.NotificationOutbox:
+    return enqueue_notification(
+        db,
+        event_type="refund_initiated",
+        recipient_email=booking.email,
+        booking_id=booking.id,
+        subject=f"Refund started for {booking.booking_ref}",
+        body=(
+            f"Your refund for booking {booking.booking_ref} has been initiated. "
+            f"Amount: ${booking.refund_amount:.2f}. "
+            f"Expected settlement by {booking.refund_expected_settlement_at}."
+        ),
+    )
+
+
+def queue_refund_success_email(db, booking: models.Booking) -> models.NotificationOutbox:
+    return enqueue_notification(
+        db,
+        event_type="refund_success",
+        recipient_email=booking.email,
+        booking_id=booking.id,
+        subject=f"Refund completed for {booking.booking_ref}",
+        body=(
+            f"Your refund for booking {booking.booking_ref} is complete. "
+            f"Gateway reference: {booking.refund_gateway_reference or 'pending'}."
+        ),
+    )
+
+
+def queue_refund_failure_email(db, booking: models.Booking) -> models.NotificationOutbox:
+    return enqueue_notification(
+        db,
+        event_type="refund_failed",
+        recipient_email=booking.email,
+        booking_id=booking.id,
+        subject=f"Refund issue for {booking.booking_ref}",
+        body=(
+            f"We could not complete the refund for booking {booking.booking_ref}. "
+            f"Reason: {booking.refund_failed_reason or 'Processing issue'}."
+        ),
+    )
+
+
 def queue_admin_alert_email(
     db,
     *,

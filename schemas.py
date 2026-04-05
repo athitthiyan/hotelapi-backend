@@ -50,6 +50,15 @@ class TransactionStatus(str, Enum):
     EXPIRED = "expired"
 
 
+class RefundStatus(str, Enum):
+    REFUND_REQUESTED = "refund_requested"
+    REFUND_INITIATED = "refund_initiated"
+    REFUND_PROCESSING = "refund_processing"
+    REFUND_SUCCESS = "refund_success"
+    REFUND_FAILED = "refund_failed"
+    REFUND_REVERSED = "refund_reversed"
+
+
 class NotificationStatus(str, Enum):
     PENDING = "pending"
     SENT = "sent"
@@ -189,6 +198,14 @@ class BookingResponse(BaseModel):
     total_amount: float
     status: BookingStatus
     payment_status: PaymentStatus
+    refund_status: Optional[RefundStatus] = None
+    refund_amount: float = 0.0
+    refund_requested_at: Optional[datetime] = None
+    refund_initiated_at: Optional[datetime] = None
+    refund_expected_settlement_at: Optional[datetime] = None
+    refund_completed_at: Optional[datetime] = None
+    refund_failed_reason: Optional[str] = None
+    refund_gateway_reference: Optional[str] = None
     special_requests: Optional[str]
     created_at: datetime
 
@@ -307,6 +324,30 @@ class PaymentStateResponse(BaseModel):
 class RefundRequest(BaseModel):
     booking_id: int = Field(gt=0)
     reason: str = Field(default="Refund approved by admin", min_length=4, max_length=255)
+
+
+class RefundTimelineResponse(BaseModel):
+    booking_id: int
+    booking_ref: str
+    refund_status: RefundStatus
+    refund_amount: float
+    requested_at: Optional[datetime] = None
+    initiated_at: Optional[datetime] = None
+    expected_settlement_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    failed_reason: Optional[str] = None
+    gateway_reference: Optional[str] = None
+
+
+class RefundAdminActionRequest(BaseModel):
+    reason: str = Field(default="Manual refund update", min_length=4, max_length=255)
+    amount: Optional[float] = Field(default=None, ge=0)
+    gateway_reference: Optional[str] = Field(default=None, min_length=3, max_length=120)
+
+
+class RefundAdminActionResponse(BaseModel):
+    message: str
+    timeline: RefundTimelineResponse
 
 
 class BookingSupportRequest(BaseModel):

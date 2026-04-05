@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, or_, func
 from sqlalchemy.orm import Session, joinedload
 
@@ -32,6 +33,11 @@ from services.notification_service import (
     queue_booking_support_request_email,
 )
 from services.audit_service import write_audit_log
+from services.document_service import (
+    build_invoice_pdf,
+    build_voucher_pdf,
+    invoice_number_for_booking,
+)
 
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
 
@@ -531,6 +537,43 @@ def get_resumable_booking(
     return booking
 
 
+def get_booking_with_room_or_404(db: Session, booking_id: int) -> models.Booking:
+    booking = (
+        db.query(models.Booking)
+        .options(
+            joinedload(models.Booking.room).joinedload(models.Room.partner_hotel),
+        )
+        .filter(models.Booking.id == booking_id)
+        .first()
+    )
+    if not booking:
+        raise booking_error(
+            status_code=404,
+            code=error_codes.HOLD_NOT_FOUND,
+            message="Booking not found",
+        )
+    return booking
+
+
+def can_access_booking_document(
+    booking: models.Booking,
+    current_user: Optional[models.User],
+    booking_ref: Optional[str],
+) -> bool:
+    user = resolve_authenticated_booking_user(current_user)
+    if user and (user.is_admin or booking.user_id == user.id or booking.email == user.email):
+        return True
+    return bool(booking_ref and booking_ref == booking.booking_ref)
+
+
+def build_document_response(content: bytes, filename: str) -> StreamingResponse:
+    return StreamingResponse(
+        iter([content]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 class ExtendHoldRequest(schemas.BaseModel):
     email: str
 
@@ -666,6 +709,42 @@ def _cancel_booking(booking_id: int, db: Session) -> models.Booking:
     db.commit()
     db.refresh(booking)
     return booking
+
+
+@router.get("/{booking_id}/invoice")
+def download_invoice(
+    booking_id: int,
+    booking_ref: Optional[str] = Query(None),
+    current_user: Optional[models.User] = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+):
+    booking = get_booking_with_room_or_404(db, booking_id)
+    if not can_access_booking_document(booking, current_user, booking_ref):
+        raise booking_error(
+            status_code=403,
+            code=error_codes.AUTH_REQUIRED,
+            message="You are not authorised to access this invoice",
+        )
+    invoice_pdf = build_invoice_pdf(booking)
+    return build_document_response(invoice_pdf, f"{invoice_number_for_booking(booking)}.pdf")
+
+
+@router.get("/{booking_id}/voucher")
+def download_voucher(
+    booking_id: int,
+    booking_ref: Optional[str] = Query(None),
+    current_user: Optional[models.User] = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+):
+    booking = get_booking_with_room_or_404(db, booking_id)
+    if not can_access_booking_document(booking, current_user, booking_ref):
+        raise booking_error(
+            status_code=403,
+            code=error_codes.AUTH_REQUIRED,
+            message="You are not authorised to access this voucher",
+        )
+    voucher_pdf = build_voucher_pdf(booking)
+    return build_document_response(voucher_pdf, f"VOUCHER-{booking.booking_ref}.pdf")
 
 
 def _support_alert_recipient(booking: models.Booking) -> str:

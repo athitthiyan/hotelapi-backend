@@ -346,19 +346,103 @@ def test_admin_refund_flow_and_reconciliation_dashboard(client, create_booking, 
         headers=headers,
         json={"booking_id": booking["id"], "reason": "Customer requested refund"},
     )
+    complete = client.post(
+        f"/payments/refunds/{booking['id']}/complete",
+        headers=headers,
+        json={"reason": "Refund settled", "gateway_reference": "RFND-COMPLETE-001"},
+    )
     reconciliation = client.get("/payments/admin/reconciliation", headers=headers)
     transactions = client.get("/payments/transactions", headers=headers)
     booking_row = db_session.query(models.Booking).filter_by(id=booking["id"]).first()
 
     assert success.status_code == 200
     assert refund.status_code == 200
+    assert complete.status_code == 200
     assert refund.json()["message"] == "Refund recorded successfully"
+    assert refund.json()["refund_status"] == "refund_initiated"
     assert booking_row.payment_status == models.PaymentStatus.REFUNDED
     assert booking_row.status == models.BookingStatus.CANCELLED
+    assert booking_row.refund_status == models.RefundStatus.REFUND_SUCCESS
     assert reconciliation.status_code == 200
     assert reconciliation.json()["refunded_attempts"] >= 1
     assert transactions.status_code == 200
     assert transactions.json()["total"] >= 1
+
+
+def test_refund_failure_retry_and_reverse_flow(client, create_booking, db_session):
+    headers = admin_headers(client, db_session)
+    booking = create_booking()
+    intent = client.post(
+        "/payments/create-payment-intent",
+        json={"booking_id": booking["id"], "payment_method": "mock", "idempotency_key": "refund-fail-001"},
+    )
+    confirm_mock_payment(
+        client,
+        booking["id"],
+        intent.json()["transaction_ref"],
+        intent.json()["payment_intent_id"],
+    )
+
+    requested = client.post(
+        "/payments/refunds/request",
+        headers=headers,
+        json={"booking_id": booking["id"], "reason": "Guest requested refund"},
+    )
+    initiated = client.post(
+        f"/payments/refunds/{booking['id']}/initiate",
+        headers=headers,
+        json={"reason": "Admin initiated refund", "gateway_reference": "RFND-INIT-001"},
+    )
+    failed = client.post(
+        f"/payments/refunds/{booking['id']}/fail",
+        headers=headers,
+        json={"reason": "Bank gateway rejected refund"},
+    )
+    retried = client.post(
+        f"/payments/refunds/{booking['id']}/retry",
+        headers=headers,
+        json={"reason": "Retry refund after gateway issue"},
+    )
+    completed = client.post(
+        f"/payments/refunds/{booking['id']}/complete",
+        headers=headers,
+        json={"reason": "Refund completed", "gateway_reference": "RFND-SUCCESS-001"},
+    )
+    reversed_refund = client.post(
+        f"/payments/refunds/{booking['id']}/reverse",
+        headers=headers,
+        json={"reason": "Incorrect refund reversed"},
+    )
+    timeline = client.get(f"/payments/refunds/{booking['id']}", headers=headers)
+
+    booking_row = db_session.query(models.Booking).filter_by(id=booking["id"]).first()
+    notifications = (
+        db_session.query(models.NotificationOutbox)
+        .filter(models.NotificationOutbox.booking_id == booking["id"])
+        .all()
+    )
+
+    assert requested.status_code == 200
+    assert requested.json()["timeline"]["refund_status"] == "refund_requested"
+    assert initiated.status_code == 200
+    assert initiated.json()["timeline"]["refund_status"] == "refund_initiated"
+    assert failed.status_code == 200
+    assert failed.json()["timeline"]["refund_status"] == "refund_failed"
+    assert retried.status_code == 200
+    assert retried.json()["timeline"]["refund_status"] == "refund_processing"
+    assert completed.status_code == 200
+    assert completed.json()["timeline"]["refund_status"] == "refund_success"
+    assert reversed_refund.status_code == 200
+    assert reversed_refund.json()["timeline"]["refund_status"] == "refund_reversed"
+    assert timeline.status_code == 200
+    assert timeline.json()["refund_status"] == "refund_reversed"
+    assert booking_row.payment_status == models.PaymentStatus.PAID
+    assert booking_row.refund_status == models.RefundStatus.REFUND_REVERSED
+    assert {item.event_type for item in notifications} >= {
+        "refund_initiated",
+        "refund_failed",
+        "refund_success",
+    }
 
 
 def test_refund_rejects_unpaid_bookings(client, create_booking, db_session):
