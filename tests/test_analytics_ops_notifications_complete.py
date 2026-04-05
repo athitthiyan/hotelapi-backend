@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 from unittest.mock import patch, MagicMock
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
@@ -46,7 +46,11 @@ def admin_token(client, email="admin@analytics.com") -> dict:
     return auth_header(r.json()["access_token"])
 
 
-def create_room(db_session, city="TestCity", price=200.0, room_type=models.RoomType.suite):
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def create_room(db_session, city="TestCity", price=200.0, room_type=models.RoomType.SUITE):
     room = models.Room(
         hotel_name="Analytics Hotel",
         room_type=room_type,
@@ -72,16 +76,33 @@ def create_room(db_session, city="TestCity", price=200.0, room_type=models.RoomT
     return room
 
 
-def create_booking(db_session, room_id: int, user_id: int, status=models.BookingStatus.CONFIRMED):
+def create_booking(
+    db_session,
+    room_id: int,
+    user_id: int,
+    *,
+    email: str,
+    user_name: str = "Test User",
+    status=models.BookingStatus.CONFIRMED,
+):
+    check_in = utc_now() + timedelta(days=30)
+    check_out = check_in + timedelta(days=2)
     b = models.Booking(
+        booking_ref=f"REF-{datetime.utcnow().timestamp()}",
+        user_name=user_name,
+        email=email,
         room_id=room_id,
         user_id=user_id,
-        check_in="2033-01-01",
-        check_out="2033-01-03",
+        check_in=check_in,
+        check_out=check_out,
         guests=1,
-        total_price=200.0,
+        nights=2,
+        room_rate=200.0,
+        taxes=24.0,
+        service_fee=10.0,
+        total_amount=234.0,
+        payment_status=models.PaymentStatus.PAID,
         status=status,
-        reference=f"REF-{datetime.utcnow().timestamp()}",
     )
     db_session.add(b)
     db_session.commit()
@@ -89,14 +110,20 @@ def create_booking(db_session, room_id: int, user_id: int, status=models.Booking
     return b
 
 
-def create_transaction(db_session, booking_id: int, status=models.TransactionStatus.SUCCESS, amount=200.0):
+def create_transaction(
+    db_session,
+    booking_id: int,
+    status=models.TransactionStatus.SUCCESS,
+    amount=200.0,
+):
     txn = models.Transaction(
         booking_id=booking_id,
-        payment_intent_id=f"pi_{datetime.utcnow().timestamp()}",
+        transaction_ref=f"TXN-{datetime.utcnow().timestamp()}",
+        stripe_payment_intent_id=f"pi_{datetime.utcnow().timestamp()}",
         amount=amount,
         currency="usd",
+        payment_method="card",
         status=status,
-        gateway="stripe",
         idempotency_key=f"ik_{datetime.utcnow().timestamp()}",
     )
     db_session.add(txn)
@@ -140,10 +167,16 @@ class TestAnalyticsGetAnalytics:
         db_session.refresh(user)
 
         room = create_room(db_session)
-        booking = create_booking(db_session, room.id, user.id)
+        booking = create_booking(db_session, room.id, user.id, email=user.email)
         create_transaction(db_session, booking.id, models.TransactionStatus.SUCCESS, 200.0)
         # Also create a failed one to exercise payment_breakdown multiple statuses
-        booking2 = create_booking(db_session, room.id, user.id)
+        booking2 = create_booking(
+            db_session,
+            room.id,
+            user.id,
+            email=user.email,
+            status=models.BookingStatus.PENDING,
+        )
         create_transaction(db_session, booking2.id, models.TransactionStatus.FAILED, 0.0)
 
         r = client.get("/analytics", headers=headers, params={"days": 30})
@@ -169,8 +202,8 @@ class TestAnalyticsGetAnalytics:
         db_session.commit()
         db_session.refresh(user)
 
-        room = create_room(db_session, room_type=models.RoomType.deluxe)
-        booking = create_booking(db_session, room.id, user.id)
+        room = create_room(db_session, room_type=models.RoomType.DELUXE)
+        booking = create_booking(db_session, room.id, user.id, email=user.email)
         create_transaction(db_session, booking.id, models.TransactionStatus.SUCCESS, 500.0)
 
         r = client.get("/analytics", headers=headers, params={"days": 30})
@@ -197,14 +230,21 @@ class TestAnalyticsGetAnalytics:
         room = create_room(db_session)
         # Booking today with no SUCCESS transaction → daily_stats entry but no revenue row
         b = models.Booking(
+            booking_ref="REF-DAILY-MISS",
+            user_name="U3",
+            email=user.email,
             room_id=room.id,
             user_id=user.id,
-            check_in="2033-01-10",
-            check_out="2033-01-12",
+            check_in=utc_now() + timedelta(days=10),
+            check_out=utc_now() + timedelta(days=12),
             guests=1,
-            total_price=100.0,
+            nights=2,
+            room_rate=100.0,
+            taxes=12.0,
+            service_fee=5.0,
+            total_amount=117.0,
+            payment_status=models.PaymentStatus.PENDING,
             status=models.BookingStatus.PENDING,
-            reference="REF-DAILY-MISS",
         )
         db_session.add(b)
         db_session.commit()
@@ -243,7 +283,7 @@ class TestAnalyticsRecentBookings:
         db_session.refresh(user)
 
         room = create_room(db_session)
-        create_booking(db_session, room.id, user.id)
+        create_booking(db_session, room.id, user.id, email=user.email)
 
         r = client.get("/analytics/recent-bookings", headers=headers)
         assert r.status_code == 200
@@ -286,7 +326,7 @@ class TestAnalyticsRevenueStats:
         db_session.refresh(user)
 
         room = create_room(db_session)
-        booking = create_booking(db_session, room.id, user.id)
+        booking = create_booking(db_session, room.id, user.id, email=user.email)
 
         # Create a transaction dated last month
         last_month_date = (datetime.utcnow().replace(day=1) - timedelta(days=1)).replace(
@@ -294,11 +334,12 @@ class TestAnalyticsRevenueStats:
         )
         txn = models.Transaction(
             booking_id=booking.id,
-            payment_intent_id="pi_lastmonth",
+            transaction_ref="TXN-LASTMONTH",
+            stripe_payment_intent_id="pi_lastmonth",
             amount=300.0,
             currency="usd",
             status=models.TransactionStatus.SUCCESS,
-            gateway="stripe",
+            payment_method="card",
             idempotency_key="ik_lastmonth",
             created_at=last_month_date,
         )
@@ -410,11 +451,13 @@ class TestGetAuditLogs:
 
 class TestNotificationOutbox:
     def _seed_notification(self, db_session, user_id: int, status: str = "PENDING"):
+        user = db_session.query(models.User).filter(models.User.id == user_id).first()
         note = models.NotificationOutbox(
-            user_id=user_id,
-            notification_type="booking_confirmation",
-            payload={"message": "Hello"},
-            status=status,
+            event_type="booking_confirmation",
+            recipient_email=user.email if user else f"user-{user_id}@test.com",
+            subject="Booking confirmation",
+            body="Hello",
+            status=models.NotificationStatus(status.lower()),
         )
         db_session.add(note)
         db_session.commit()

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, extract, cast, Date
+from sqlalchemy import func, extract
 from datetime import datetime, timedelta
 import models, schemas
 from database import get_db
@@ -67,21 +67,23 @@ def get_analytics(
     )
 
     # ── Daily Stats ───────────────────────────────────────────────────────────
+    booking_day = func.date(models.Booking.created_at)
+    transaction_day = func.date(models.Transaction.created_at)
     daily_raw = db.query(
-        cast(models.Booking.created_at, Date).label("date"),
+        booking_day.label("date"),
         func.count(models.Booking.id).label("bookings"),
     ).filter(models.Booking.created_at >= start_date)\
-     .group_by(cast(models.Booking.created_at, Date))\
-     .order_by(cast(models.Booking.created_at, Date)).all()
+     .group_by(booking_day)\
+     .order_by(booking_day).all()
 
     daily_revenue_raw = db.query(
-        cast(models.Transaction.created_at, Date).label("date"),
+        transaction_day.label("date"),
         func.coalesce(func.sum(models.Transaction.amount), 0).label("revenue"),
     ).filter(
         models.Transaction.status == models.TransactionStatus.SUCCESS,
         models.Transaction.created_at >= start_date,
-    ).group_by(cast(models.Transaction.created_at, Date))\
-     .order_by(cast(models.Transaction.created_at, Date)).all()
+    ).group_by(transaction_day)\
+     .order_by(transaction_day).all()
 
     revenue_map = {str(r.date): float(r.revenue) for r in daily_revenue_raw}
     daily_stats = [

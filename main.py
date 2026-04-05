@@ -99,6 +99,7 @@ _HARDCODED_ORIGINS = [
 ]
 _env_origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
 origins = list(set(_env_origins + _HARDCODED_ORIGINS))
+logger.info("Configured CORS origins: %s", ", ".join(sorted(origins)))
 
 app.add_middleware(
     CORSMiddleware,
