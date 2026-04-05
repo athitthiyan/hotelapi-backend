@@ -150,7 +150,7 @@ class BookingCreate(BaseModel):
     room_id: int = Field(gt=0)
     check_in: datetime
     check_out: datetime
-    guests: int = Field(default=1, ge=1, le=10)
+    guests: int = Field(default=1, ge=1)
     special_requests: Optional[str] = Field(default=None, max_length=500)
 
     @field_validator("phone")

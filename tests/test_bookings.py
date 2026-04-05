@@ -10,8 +10,8 @@ def booking_payload(room_id: int, **overrides):
         "email": "athit@example.com",
         "phone": "1234567890",
         "room_id": room_id,
-        "check_in": datetime.now(timezone.utc).isoformat(),
-        "check_out": (datetime.now(timezone.utc) + timedelta(days=2)).isoformat(),
+        "check_in": (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
+        "check_out": (datetime.now(timezone.utc) + timedelta(days=2, hours=2)).isoformat(),
         "guests": 2,
         "special_requests": "",
     }
@@ -303,8 +303,8 @@ def test_booking_creation_rejects_invalid_phone_number(client, room_id):
             "email": "athit@example.com",
             "phone": "abc-not-valid",
             "room_id": room_id,
-            "check_in": datetime.now(timezone.utc).isoformat(),
-            "check_out": (datetime.now(timezone.utc) + timedelta(days=2)).isoformat(),
+            "check_in": (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
+            "check_out": (datetime.now(timezone.utc) + timedelta(days=2, hours=2)).isoformat(),
             "guests": 2,
             "special_requests": "",
         },
@@ -445,8 +445,8 @@ def test_extend_hold_already_paid(client, db_session, room_id):
 def test_extend_hold_dates_taken_by_confirmed_booking(client, db_session, room_id):
     """If another confirmed booking grabbed the dates, extend-hold returns 409."""
     now = datetime.now(timezone.utc)
-    check_in = now.isoformat()
-    check_out = (now + timedelta(days=2)).isoformat()
+    check_in = (now + timedelta(hours=2)).isoformat()
+    check_out = (now + timedelta(days=2, hours=2)).isoformat()
 
     # Create original booking then expire its hold
     original = client.post("/bookings", json=booking_payload(room_id)).json()
@@ -485,15 +485,15 @@ def test_race_condition_two_simultaneous_bookings(client, room_id):
     now = datetime.now(timezone.utc)
     payload_a = booking_payload(
         room_id,
-        check_in=now.isoformat(),
-        check_out=(now + timedelta(days=2)).isoformat(),
+        check_in=(now + timedelta(hours=2)).isoformat(),
+        check_out=(now + timedelta(days=2, hours=2)).isoformat(),
         email="user_a@example.com",
     )
     payload_b = {
         **booking_payload(
             room_id,
-            check_in=now.isoformat(),
-            check_out=(now + timedelta(days=2)).isoformat(),
+            check_in=(now + timedelta(hours=2)).isoformat(),
+            check_out=(now + timedelta(days=2, hours=2)).isoformat(),
         ),
         "email": "user_b@example.com",
     }

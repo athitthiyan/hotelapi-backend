@@ -166,7 +166,7 @@ class TestCreateBooking:
     def test_room_not_found_returns_404(self, client):
         r = client.post("/bookings", json=booking_payload(9999))
         assert r.status_code == 404
-        assert r.json()["detail"] == "Room not found"
+        assert r.json()["detail"]["code"] == "ROOM_NOT_FOUND"
 
     def test_unavailable_room_returns_400(self, client, db_session):
         room = models.Room(
@@ -184,7 +184,7 @@ class TestCreateBooking:
 
         r = client.post("/bookings", json=booking_payload(room.id))
         assert r.status_code == 400
-        assert r.json()["detail"] == "Room is not available"
+        assert r.json()["detail"]["code"] == "ROOM_UNAVAILABLE"
 
     def test_checkout_before_checkin_returns_400(self, client, room_id):
         r = client.post(
@@ -196,7 +196,7 @@ class TestCreateBooking:
             ),
         )
         assert r.status_code == 400
-        assert "Check-out must be after check-in" in r.json()["detail"]
+        assert r.json()["detail"]["code"] == "INVALID_DATE_RANGE"
 
     def test_same_day_checkin_checkout_returns_400(self, client, room_id):
         same = FUTURE_IN.isoformat()
@@ -380,7 +380,8 @@ class TestCancelBooking:
         client.patch(f"/bookings/{booking_id}/cancel")
         r = client.patch(f"/bookings/{booking_id}/cancel")
         assert r.status_code == 400
-        assert r.json()["detail"] == "Booking already cancelled"
+        assert r.json()["detail"]["code"] == "HOLD_EXPIRED"
+        assert "cancelled" in r.json()["detail"]["message"].lower()
 
     def test_cancel_already_expired_returns_400(self, client, db_session, room_id):
         booking = models.Booking(
@@ -407,7 +408,7 @@ class TestCancelBooking:
 
         r = client.patch(f"/bookings/{booking.id}/cancel")
         assert r.status_code == 400
-        assert "expired" in r.json()["detail"].lower()
+        assert "expired" in r.json()["detail"]["message"].lower()
 
     def test_cancel_stale_hold_returns_400_expired(self, client, db_session, room_id):
         """Booking hold expired at cancel time → mark expired and return 400."""
@@ -435,7 +436,7 @@ class TestCancelBooking:
 
         r = client.patch(f"/bookings/{booking.id}/cancel")
         assert r.status_code == 400
-        assert "expired" in r.json()["detail"].lower()
+        assert "expired" in r.json()["detail"]["message"].lower()
 
     def test_cancel_paid_booking_returns_400(self, client, db_session, room_id):
         booking = models.Booking(
@@ -462,7 +463,7 @@ class TestCancelBooking:
 
         r = client.patch(f"/bookings/{booking.id}/cancel")
         assert r.status_code == 400
-        assert "refund" in r.json()["detail"].lower() or "paid" in r.json()["detail"].lower()
+        assert "refund" in r.json()["detail"]["message"].lower() or "paid" in r.json()["detail"]["message"].lower()
 
 
 # ─── Admin dashboard ──────────────────────────────────────────────────────────

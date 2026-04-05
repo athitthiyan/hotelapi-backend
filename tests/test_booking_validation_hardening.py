@@ -11,8 +11,8 @@ def booking_payload(room_id: int, **overrides):
         "email": "athit@example.com",
         "phone": "1234567890",
         "room_id": room_id,
-        "check_in": datetime.now(timezone.utc).isoformat(),
-        "check_out": (datetime.now(timezone.utc) + timedelta(days=2)).isoformat(),
+        "check_in": (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
+        "check_out": (datetime.now(timezone.utc) + timedelta(days=2, hours=2)).isoformat(),
         "guests": 2,
         "special_requests": "",
     }

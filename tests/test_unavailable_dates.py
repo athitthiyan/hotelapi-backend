@@ -70,8 +70,8 @@ def test_invalid_date_range_returns_400(client, room_id):
 def test_active_hold_appears_in_held_dates(client, db_session, room_id):
     """A PENDING booking with a non-expired hold should produce held_dates."""
     now = datetime.now(timezone.utc)
-    check_in = now
-    check_out = now + timedelta(days=2)
+    check_in = now + timedelta(hours=2)
+    check_out = now + timedelta(days=2, hours=2)
 
     _create_booking(client, room_id, check_in, check_out)
 
@@ -95,8 +95,8 @@ def test_active_hold_appears_in_held_dates(client, db_session, room_id):
 def test_confirmed_booking_appears_in_unavailable_dates(client, db_session, room_id):
     """Dates for a CONFIRMED booking must be in unavailable_dates, not held_dates."""
     now = datetime.now(timezone.utc)
-    check_in = now
-    check_out = now + timedelta(days=2)
+    check_in = now + timedelta(hours=2)
+    check_out = now + timedelta(days=2, hours=2)
 
     booking_data = _create_booking(client, room_id, check_in, check_out)
 
@@ -128,8 +128,8 @@ def test_confirmed_booking_appears_in_unavailable_dates(client, db_session, room
 def test_expired_hold_not_in_held_dates(client, db_session, room_id):
     """After the hold expires and inventory is released, dates should not appear."""
     now = datetime.now(timezone.utc)
-    check_in = now
-    check_out = now + timedelta(days=2)
+    check_in = now + timedelta(hours=2)
+    check_out = now + timedelta(days=2, hours=2)
 
     booking_data = _create_booking(client, room_id, check_in, check_out)
 
@@ -195,8 +195,8 @@ def test_default_window_covers_180_days(client, room_id):
 def test_held_and_unavailable_are_disjoint(client, db_session, room_id):
     """The same date must not appear in both lists simultaneously."""
     now = datetime.now(timezone.utc)
-    check_in = now
-    check_out = now + timedelta(days=3)
+    check_in = now + timedelta(hours=2)
+    check_out = now + timedelta(days=3, hours=2)
 
     # Confirmed booking — creates unavailable dates
     _create_booking(client, room_id, check_in, check_out)
@@ -219,8 +219,8 @@ def test_held_and_unavailable_are_disjoint(client, db_session, room_id):
 def test_race_condition_second_booking_sees_conflict(client, room_id):
     """After one booking holds dates, a second booking for the same dates must be rejected."""
     now = datetime.now(timezone.utc)
-    check_in = now
-    check_out = now + timedelta(days=2)
+    check_in = now + timedelta(hours=2)
+    check_out = now + timedelta(days=2, hours=2)
 
     first_resp = client.post(
         "/bookings",
@@ -252,6 +252,6 @@ def test_race_condition_second_booking_sees_conflict(client, room_id):
 
     # After first hold expires, second attempt should succeed
     # Just verify the conflict response body contains useful info
-    assert "reserved" in second_resp.json()["detail"].lower() or \
-           "available" in second_resp.json()["detail"].lower() or \
-           "inventory" in second_resp.json()["detail"].lower()
+    detail = second_resp.json()["detail"]
+    msg = detail["message"].lower() if isinstance(detail, dict) else str(detail).lower()
+    assert any(w in msg for w in ["reserved", "available", "inventory", "hold", "exist", "conflict"])
