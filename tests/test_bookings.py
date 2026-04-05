@@ -645,3 +645,51 @@ def test_race_condition_two_simultaneous_bookings(client, room_id):
     # One must succeed (201) and one must fail (409)
     assert 201 in statuses, "At least one booking should succeed"
     assert 409 in statuses, "At least one booking should be rejected as a conflict"
+
+
+def test_support_request_queues_notification_for_booking_owner(client, db_session, room_id):
+    headers = user_headers(client, db_session)
+    created = client.post("/bookings", json=booking_payload(room_id), headers=headers).json()
+
+    response = client.post(
+        f"/bookings/{created['id']}/support-request",
+        headers=headers,
+        json={
+            "category": "cancellation_help",
+            "message": "Please help me understand the refund amount before cancelling.",
+        },
+    )
+
+    notification = (
+        db_session.query(models.NotificationOutbox)
+        .filter(models.NotificationOutbox.booking_id == created["id"])
+        .order_by(models.NotificationOutbox.id.desc())
+        .first()
+    )
+    assert response.status_code == 200
+    assert "Support request submitted" in response.json()["message"]
+    assert notification is not None
+    assert notification.event_type == "booking_support_request"
+    assert created["booking_ref"] in notification.subject
+
+
+def test_support_request_requires_booking_owner(client, db_session, room_id):
+    owner_headers = user_headers(client, db_session)
+    created = client.post("/bookings", json=booking_payload(room_id), headers=owner_headers).json()
+    other_headers = user_headers(
+        client,
+        db_session,
+        email="other-user@example.com",
+        password="OtherPass123",
+    )
+
+    response = client.post(
+        f"/bookings/{created['id']}/support-request",
+        headers=other_headers,
+        json={
+            "category": "refund_help",
+            "message": "I should not be able to request support for another booking.",
+        },
+    )
+
+    assert response.status_code == 404

@@ -11,7 +11,7 @@ import models
 import schemas
 import error_codes
 from error_codes import booking_error
-from database import get_db
+from database import get_db, settings
 from routers.auth import (
     get_current_admin,
     get_current_user,
@@ -29,7 +29,9 @@ from services.inventory_service import (
 from services.notification_service import (
     queue_booking_cancellation_email,
     queue_booking_hold_email,
+    queue_booking_support_request_email,
 )
+from services.audit_service import write_audit_log
 
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
 
@@ -666,6 +668,13 @@ def _cancel_booking(booking_id: int, db: Session) -> models.Booking:
     return booking
 
 
+def _support_alert_recipient(booking: models.Booking) -> str:
+    room = booking.room
+    if room and room.partner_hotel and room.partner_hotel.support_email:
+        return room.partner_hotel.support_email
+    return settings.seed_admin_email or "support@stayvora.co.in"
+
+
 @router.patch("/{booking_id}/cancel", response_model=schemas.BookingResponse)
 def cancel_booking(booking_id: int, db: Session = Depends(get_db)):
     return _cancel_booking(booking_id, db)
@@ -674,6 +683,55 @@ def cancel_booking(booking_id: int, db: Session = Depends(get_db)):
 @router.post("/{booking_id}/cancel", response_model=schemas.BookingResponse)
 def cancel_booking_post(booking_id: int, db: Session = Depends(get_db)):
     return _cancel_booking(booking_id, db)
+
+
+@router.post("/{booking_id}/support-request", response_model=schemas.MessageResponse)
+def request_booking_support(
+    booking_id: int,
+    payload: schemas.BookingSupportRequest,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    booking = (
+        db.query(models.Booking)
+        .options(
+            joinedload(models.Booking.room).joinedload(models.Room.partner_hotel),
+        )
+        .filter(
+            models.Booking.id == booking_id,
+            or_(
+                models.Booking.user_id == current_user.id,
+                models.Booking.email == current_user.email,
+            ),
+        )
+        .first()
+    )
+    if not booking:
+        raise booking_error(
+            status_code=404,
+            code=error_codes.HOLD_NOT_FOUND,
+            message="Booking not found",
+        )
+
+    queue_booking_support_request_email(
+        db,
+        recipient_email=_support_alert_recipient(booking),
+        booking=booking,
+        category=payload.category,
+        message=payload.message,
+    )
+    write_audit_log(
+        db,
+        actor_user_id=current_user.id,
+        action="booking.support_request",
+        entity_type="booking",
+        entity_id=booking.id,
+        metadata={"category": payload.category},
+    )
+    db.commit()
+    return {
+        "message": "Support request submitted. Our team will contact you shortly."
+    }
 
 
 @router.get("/admin/dashboard", response_model=schemas.BookingDashboardResponse)

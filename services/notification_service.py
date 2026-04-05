@@ -115,6 +115,50 @@ def queue_booking_cancellation_email(
     )
 
 
+def queue_admin_alert_email(
+    db,
+    *,
+    recipient_email: str,
+    subject: str,
+    body: str,
+    booking_id: Optional[int] = None,
+    transaction_id: Optional[int] = None,
+    event_type: str = "admin_alert",
+) -> models.NotificationOutbox:
+    return enqueue_notification(
+        db,
+        event_type=event_type,
+        recipient_email=recipient_email,
+        booking_id=booking_id,
+        transaction_id=transaction_id,
+        subject=subject,
+        body=body,
+    )
+
+
+def queue_booking_support_request_email(
+    db,
+    *,
+    recipient_email: str,
+    booking: models.Booking,
+    category: str,
+    message: str,
+) -> models.NotificationOutbox:
+    return enqueue_notification(
+        db,
+        event_type="booking_support_request",
+        recipient_email=recipient_email,
+        booking_id=booking.id,
+        subject=f"Support request for booking {booking.booking_ref}",
+        body=(
+            f"Category: {category}\n"
+            f"Booking ref: {booking.booking_ref}\n"
+            f"Guest: {booking.user_name} <{booking.email}>\n"
+            f"Message: {message}"
+        ),
+    )
+
+
 def deliver_notification(notification: models.NotificationOutbox) -> None:
     if notification.recipient_email.startswith("fail-delivery+"):
         raise ValueError("Notification delivery rejected for invalid test domain")

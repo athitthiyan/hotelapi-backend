@@ -526,3 +526,62 @@ def test_create_payment_intent_blocks_expired_hold(client, create_booking, db_se
     assert response.status_code == 400
     assert response.json()["detail"] == "Cancelled or expired bookings cannot be paid"
     assert booking_row.status == models.BookingStatus.EXPIRED
+
+
+def test_reconciliation_recovers_mismatched_success_and_flags_orphan_paid_booking(
+    client, create_booking, db_session
+):
+    headers = admin_headers(client, db_session)
+    booking = create_booking()
+    intent = client.post(
+        "/payments/create-payment-intent",
+        json={"booking_id": booking["id"], "payment_method": "mock", "idempotency_key": "reconcile-success-001"},
+    )
+    success = confirm_mock_payment(
+        client,
+        booking["id"],
+        intent.json()["transaction_ref"],
+        intent.json()["payment_intent_id"],
+    )
+    assert success.status_code == 200
+
+    booking_row = db_session.query(models.Booking).filter_by(id=booking["id"]).first()
+    booking_row.status = models.BookingStatus.PROCESSING
+    booking_row.payment_status = models.PaymentStatus.PROCESSING
+    future_in = booking_row.check_in + timedelta(days=3)
+    future_out = booking_row.check_out + timedelta(days=3)
+
+    orphan_booking = client.post(
+        "/bookings",
+        json={
+            "user_name": "Finance Gap",
+            "email": "finance-gap@example.com",
+            "phone": "1234567890",
+            "room_id": booking["room_id"],
+            "check_in": future_in.isoformat(),
+            "check_out": future_out.isoformat(),
+            "guests": 1,
+            "special_requests": "",
+        },
+    )
+    assert orphan_booking.status_code == 201
+    orphan_row = db_session.query(models.Booking).filter_by(id=orphan_booking.json()["id"]).first()
+    orphan_row.payment_status = models.PaymentStatus.PAID
+    orphan_row.status = models.BookingStatus.CONFIRMED
+    db_session.commit()
+
+    reconcile = client.post("/payments/reconcile-stuck", headers=headers, params={"timeout_minutes": 30})
+
+    db_session.refresh(booking_row)
+    db_session.refresh(orphan_row)
+    alerts = (
+        db_session.query(models.NotificationOutbox)
+        .filter(models.NotificationOutbox.event_type == "payment_ops_alert")
+        .all()
+    )
+    assert reconcile.status_code == 200
+    assert reconcile.json()["recovered_success_states"] == 1
+    assert reconcile.json()["orphan_paid_bookings"] >= 1
+    assert booking_row.payment_status == models.PaymentStatus.PAID
+    assert booking_row.status == models.BookingStatus.CONFIRMED
+    assert any(orphan_row.booking_ref in alert.subject for alert in alerts)

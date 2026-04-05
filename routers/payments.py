@@ -20,6 +20,7 @@ from services.inventory_service import (
     release_inventory_for_booking,
 )
 from services.notification_service import (
+    queue_admin_alert_email,
     queue_booking_cancellation_email,
     queue_booking_confirmation_email,
     queue_payment_failure_email,
@@ -34,12 +35,61 @@ FAILED_PAYMENT_BLOCK_WINDOW_MINUTES = 30
 FAILED_PAYMENT_BLOCK_THRESHOLD = 3
 
 
+def ops_alert_recipient() -> str:
+    return settings.seed_admin_email or "ops@stayvora.co.in"
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
 def generate_txn_ref() -> str:
     return "TXN-" + str(uuid.uuid4()).upper()[:12]
+
+
+def write_payment_audit(
+    db: Session,
+    *,
+    action: str,
+    booking: Optional[models.Booking] = None,
+    transaction: Optional[models.Transaction] = None,
+    actor_user_id: Optional[int] = None,
+    metadata: Optional[dict] = None,
+) -> None:
+    entity_id = booking.id if booking else (transaction.id if transaction else "unknown")
+    entity_type = "booking" if booking else "payment"
+    write_audit_log(
+        db,
+        actor_user_id=actor_user_id,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        metadata=metadata
+        or {
+            "booking_id": booking.id if booking else transaction.booking_id if transaction else None,
+            "transaction_ref": transaction.transaction_ref if transaction else None,
+        },
+    )
+
+
+def queue_payment_ops_alert(
+    db: Session,
+    *,
+    subject: str,
+    body: str,
+    booking: Optional[models.Booking] = None,
+    transaction: Optional[models.Transaction] = None,
+    event_type: str = "payment_ops_alert",
+) -> None:
+    queue_admin_alert_email(
+        db,
+        recipient_email=ops_alert_recipient(),
+        subject=subject,
+        body=body,
+        booking_id=booking.id if booking else None,
+        transaction_id=transaction.id if transaction else None,
+        event_type=event_type,
+    )
 
 
 def get_booking_or_404(db: Session, booking_id: int) -> models.Booking:
@@ -278,6 +328,17 @@ def create_pending_transaction(
     )
     db.add(transaction)
     db.flush()
+    write_payment_audit(
+        db,
+        action="payment.intent.created",
+        booking=booking,
+        transaction=transaction,
+        metadata={
+            "payment_method": payment_method,
+            "idempotency_key": idempotency_key,
+            "retry_of_transaction_id": retry_of_transaction_id,
+        },
+    )
     return transaction
 
 
@@ -293,6 +354,13 @@ def upsert_success_transaction(
     existing_success = get_success_transaction_for_booking(db, booking.id)
     if existing_success:
         apply_paid_state(booking)
+        write_payment_audit(
+            db,
+            action="payment.success.idempotent",
+            booking=booking,
+            transaction=existing_success,
+            metadata={"transaction_ref": existing_success.transaction_ref},
+        )
         db.commit()
         return get_transaction_with_booking(db, existing_success.id)
 
@@ -328,6 +396,16 @@ def upsert_success_transaction(
     db.flush()
     queue_booking_confirmation_email(db, booking, transaction)
     queue_payment_receipt_email(db, booking, transaction)
+    write_payment_audit(
+        db,
+        action="payment.success.recorded",
+        booking=booking,
+        transaction=transaction,
+        metadata={
+            "payment_method": payment_method,
+            "payment_intent_id": payment_intent_id,
+        },
+    )
 
     db.commit()
     db.refresh(transaction)
@@ -404,6 +482,16 @@ def mark_transaction_processing(
     transaction.status = models.TransactionStatus.PROCESSING
     transaction.failure_reason = None
     apply_processing_state(booking)
+    write_payment_audit(
+        db,
+        action="payment.processing.recorded",
+        booking=booking,
+        transaction=transaction,
+        metadata={
+            "payment_method": payment_method,
+            "payment_intent_id": payment_intent_id,
+        },
+    )
 
     db.commit()
     db.refresh(transaction)
@@ -457,6 +545,17 @@ def record_failed_transaction(
     # else: hold still valid — keep the lock so the user can retry immediately
     db.flush()
     queue_payment_failure_email(db, booking, transaction, reason)
+    write_payment_audit(
+        db,
+        action="payment.failure.recorded",
+        booking=booking,
+        transaction=transaction,
+        metadata={
+            "reason": reason,
+            "payment_intent_id": payment_intent_id,
+            "transaction_ref": transaction.transaction_ref,
+        },
+    )
 
     db.commit()
     db.refresh(transaction)
@@ -496,6 +595,67 @@ def reconcile_stuck_payments(
     if updated:
         db.commit()
     return updated
+
+
+def reconcile_payment_integrity(db: Session) -> dict[str, int]:
+    recovered_success_states = 0
+    orphan_paid_bookings = 0
+
+    success_transactions = (
+        db.query(models.Transaction)
+        .options(joinedload(models.Transaction.booking))
+        .filter(models.Transaction.status == models.TransactionStatus.SUCCESS)
+        .all()
+    )
+    for transaction in success_transactions:
+        booking = transaction.booking
+        if not booking:
+            continue
+        if (
+            booking.payment_status != models.PaymentStatus.PAID
+            or booking.status != models.BookingStatus.CONFIRMED
+        ):
+            apply_paid_state(booking)
+            confirm_inventory_for_booking(db, booking=booking)
+            write_payment_audit(
+                db,
+                action="payments.reconcile.recovered-success-state",
+                booking=booking,
+                transaction=transaction,
+            )
+            recovered_success_states += 1
+
+    paid_bookings = (
+        db.query(models.Booking)
+        .filter(models.Booking.payment_status == models.PaymentStatus.PAID)
+        .all()
+    )
+    for booking in paid_bookings:
+        success_transaction = get_success_transaction_for_booking(db, booking.id)
+        if success_transaction:
+            continue
+        write_payment_audit(
+            db,
+            action="payments.reconcile.orphan-paid-booking",
+            booking=booking,
+        )
+        queue_payment_ops_alert(
+            db,
+            subject=f"Orphan paid booking detected: {booking.booking_ref}",
+            body=(
+                f"Booking {booking.booking_ref} is marked paid but has no successful "
+                "transaction record. Manual finance review is required."
+            ),
+            booking=booking,
+        )
+        orphan_paid_bookings += 1
+
+    if recovered_success_states or orphan_paid_bookings:
+        db.commit()
+    return {
+        "recovered_success_states": recovered_success_states,
+        "orphan_paid_bookings": orphan_paid_bookings,
+    }
 
 
 @router.post("/create-payment-intent")
@@ -656,16 +816,25 @@ def reconcile_stuck_payment_attempts(
     admin: models.User = Depends(get_current_admin),
 ):
     updated = reconcile_stuck_payments(db, timeout_minutes=timeout_minutes)
+    integrity = reconcile_payment_integrity(db)
     write_audit_log(
         db,
         actor_user_id=admin.id,
         action="payments.reconcile",
         entity_type="payment",
         entity_id="stuck-attempts",
-        metadata={"timeout_minutes": timeout_minutes, "updated": updated},
+        metadata={
+            "timeout_minutes": timeout_minutes,
+            "updated": updated,
+            **integrity,
+        },
     )
     db.commit()
-    return {"message": "Reconciliation completed", "updated": updated}
+    return {
+        "message": "Reconciliation completed",
+        "updated": updated,
+        **integrity,
+    }
 
 
 @router.get("/transactions", response_model=schemas.TransactionListResponse)
@@ -729,6 +898,14 @@ def refund_payment(
     booking.status = models.BookingStatus.CANCELLED
     release_inventory_for_booking(db, booking=booking)
     queue_booking_cancellation_email(db, booking)
+    write_payment_audit(
+        db,
+        actor_user_id=admin.id,
+        action="payment.refund.recorded",
+        booking=booking,
+        transaction=transaction,
+        metadata={"reason": payload.reason},
+    )
     write_audit_log(
         db,
         actor_user_id=admin.id,
@@ -844,6 +1021,12 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                 card_last4=last4,
                 card_brand=brand,
             )
+            write_payment_audit(
+                db,
+                action="payment.webhook.succeeded",
+                booking=booking,
+                metadata={"payment_intent_id": payment_intent["id"]},
+            )
 
     if event["type"] == "payment_intent.payment_failed":
         payment_intent = event["data"]["object"]
@@ -860,6 +1043,15 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                     reason=reason,
                     payment_intent_id=payment_intent["id"],
                     transaction_ref=payment_intent.get("metadata", {}).get("transaction_ref"),
+                )
+                write_payment_audit(
+                    db,
+                    action="payment.webhook.failed",
+                    booking=booking,
+                    metadata={
+                        "payment_intent_id": payment_intent["id"],
+                        "reason": reason,
+                    },
                 )
 
     return {"status": "ok"}

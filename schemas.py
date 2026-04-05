@@ -309,6 +309,19 @@ class RefundRequest(BaseModel):
     reason: str = Field(default="Refund approved by admin", min_length=4, max_length=255)
 
 
+class BookingSupportRequest(BaseModel):
+    category: str = Field(min_length=4, max_length=50)
+    message: str = Field(min_length=8, max_length=500)
+
+    @field_validator("category")
+    @classmethod
+    def validate_support_category(cls, value: str) -> str:
+        allowed = {"payment_help", "cancellation_help", "refund_help", "booking_issue"}
+        if value not in allowed:
+            raise ValueError("Support category is invalid")
+        return value
+
+
 class BookingDashboardResponse(BaseModel):
     bookings: List[BookingResponse]
     total: int
@@ -714,6 +727,24 @@ class AuditLogResponse(BaseModel):
 class AuditLogListResponse(BaseModel):
     logs: List[AuditLogResponse]
     total: int
+
+
+class IncidentBookingSummary(BaseModel):
+    booking_id: int
+    booking_ref: str
+    status: BookingStatus
+    payment_status: PaymentStatus
+    room_id: int
+    email: EmailStr
+    transaction_ref: Optional[str] = None
+    created_at: Optional[datetime] = None
+    hold_expires_at: Optional[datetime] = None
+
+
+class IncidentDashboardResponse(BaseModel):
+    orphan_paid_bookings: List[IncidentBookingSummary]
+    stale_processing_bookings: List[IncidentBookingSummary]
+    active_holds: List[IncidentBookingSummary]
 
 
 class InventoryUpdateRequest(BaseModel):
