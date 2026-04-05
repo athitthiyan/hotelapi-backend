@@ -2,10 +2,12 @@ import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 
+import bcrypt
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 import httpx as _httpx
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from passlib.exc import PasswordValueError, UnknownHashError
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -16,7 +18,9 @@ from services.rate_limit_service import enforce_rate_limit
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
-pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+# Keep pbkdf2_sha256 as the preferred scheme for newly created passwords,
+# while still accepting older/manual bcrypt hashes already stored in production.
+pwd_context = CryptContext(schemes=["pbkdf2_sha256", "bcrypt"], deprecated="auto")
 ALGORITHM = "HS256"
 
 
@@ -33,7 +37,18 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        return pwd_context.verify(plain_password, hashed_password)
+    except (UnknownHashError, PasswordValueError, ValueError):
+        if hashed_password.startswith(("$2a$", "$2b$", "$2y$")):
+            try:
+                return bcrypt.checkpw(
+                    plain_password.encode("utf-8"),
+                    hashed_password.encode("utf-8"),
+                )
+            except ValueError:
+                return False
+        return False
 
 
 def create_token(user: models.User, token_type: str, expires_delta: timedelta) -> str:

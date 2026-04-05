@@ -6,6 +6,7 @@ wrong token type, admin guard, refresh, and helper functions.
 
 from __future__ import annotations
 
+import bcrypt
 import pytest
 
 import models
@@ -16,7 +17,6 @@ from routers.auth import (
     get_bearer_token,
     get_user_from_payload,
 )
-
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -54,6 +54,13 @@ class TestAuthHelpers:
     def test_verify_password_wrong(self):
         hashed = hash_password("MySecret1")
         assert verify_password("Wrong", hashed) is False
+
+    def test_verify_password_supports_legacy_bcrypt_hashes(self):
+        legacy_hash = bcrypt.hashpw(b"PartnerPass123", bcrypt.gensalt()).decode("utf-8")
+        assert verify_password("PartnerPass123", legacy_hash) is True
+
+    def test_verify_password_unknown_hash_returns_false(self):
+        assert verify_password("MySecret1", "not-a-real-hash") is False
 
     def test_decode_token_wrong_type_raises_401(self, client):
         # First create a real access token

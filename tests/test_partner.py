@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import bcrypt
 import models
 from routers.auth import hash_password
 
@@ -116,6 +117,26 @@ class TestPartnerAuth:
         response = client.get("/partner/hotel", headers=auth_header(signup.json()["access_token"]))
         assert response.status_code == 403
         assert response.json()["detail"] == "Partner access required"
+
+    def test_partner_login_accepts_legacy_bcrypt_password_hash(self, client, db_session):
+        user = models.User(
+            email="legacy-partner@example.com",
+            full_name="Legacy Partner",
+            hashed_password=bcrypt.hashpw(b"PartnerPass123", bcrypt.gensalt()).decode("utf-8"),
+            is_active=True,
+            is_admin=False,
+            is_partner=True,
+        )
+        db_session.add(user)
+        db_session.commit()
+
+        response = client.post(
+            "/partner/login",
+            json={"email": "legacy-partner@example.com", "password": "PartnerPass123"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["user"]["email"] == "legacy-partner@example.com"
 
 
 class TestPartnerOperations:
