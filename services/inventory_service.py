@@ -38,8 +38,11 @@ def get_or_create_inventory_row(
     *,
     room_id: int,
     inventory_date: date,
-    default_total_units: int = 1,
+    default_total_units: int | None = None,
 ) -> models.RoomInventory:
+    if default_total_units is None:
+        room = db.query(models.Room).filter(models.Room.id == room_id).first()
+        default_total_units = room.total_room_count if room else 1
     row = (
         db.query(models.RoomInventory)
         .filter(
@@ -57,6 +60,8 @@ def get_or_create_inventory_row(
         total_units=default_total_units,
         available_units=default_total_units,
         locked_units=0,
+        booked_units=0,
+        blocked_units=0,
         status=models.InventoryStatus.AVAILABLE,
     )
     db.add(row)
@@ -95,7 +100,7 @@ def get_or_create_inventory_rows_for_stay(
     room_id: int,
     check_in: datetime,
     check_out: datetime,
-    default_total_units: int = 1,
+    default_total_units: int | None = None,
     for_update: bool = False,
 ) -> list[models.RoomInventory]:
     stay_dates = list(iter_stay_dates(check_in, check_out))
@@ -120,6 +125,8 @@ def get_or_create_inventory_rows_for_stay(
                 total_units=default_total_units,
                 available_units=default_total_units,
                 locked_units=0,
+                booked_units=0,
+                blocked_units=0,
                 status=models.InventoryStatus.AVAILABLE,
             )
         )
@@ -136,6 +143,27 @@ def get_or_create_inventory_rows_for_stay(
         rows_by_date = {row.inventory_date: row for row in existing_rows}
 
     return [rows_by_date[stay_date] for stay_date in stay_dates]
+
+
+def derive_inventory_status(row: models.RoomInventory) -> models.InventoryStatus:
+    if row.available_units <= 0:
+        return models.InventoryStatus.BLOCKED
+    if row.locked_units > 0:
+        return models.InventoryStatus.LOCKED
+    return models.InventoryStatus.AVAILABLE
+
+
+def calculate_effective_price(
+    room: models.Room,
+    *,
+    inventory_date: date,
+    inventory_row: models.RoomInventory | None = None,
+) -> float:
+    if inventory_row and inventory_row.price_override is not None:
+        return inventory_row.price_override
+    if inventory_date.weekday() >= 5 and room.weekend_price is not None:
+        return room.weekend_price
+    return room.price
 
 
 def release_expired_inventory_locks(
@@ -168,11 +196,7 @@ def release_expired_inventory_locks(
         row.locked_units = 0
         row.locked_by_booking_id = None
         row.lock_expires_at = None
-        row.status = (
-            models.InventoryStatus.BLOCKED
-            if row.available_units <= 0
-            else models.InventoryStatus.AVAILABLE
-        )
+        row.status = derive_inventory_status(row)
         released += 1
 
     if released:
@@ -215,11 +239,7 @@ def lock_inventory_for_booking(
             row.locked_units += 1
             row.locked_by_booking_id = booking.id
             row.lock_expires_at = lock_expires_at
-            row.status = (
-                models.InventoryStatus.LOCKED
-                if row.available_units > 0
-                else models.InventoryStatus.BLOCKED
-            )
+            row.status = derive_inventory_status(row)
 
 
 def confirm_inventory_for_booking(db, *, booking: models.Booking) -> None:
@@ -229,14 +249,11 @@ def confirm_inventory_for_booking(db, *, booking: models.Booking) -> None:
         .all()
     )
     for row in rows:
-        row.locked_units = 0
+        row.locked_units = max(0, row.locked_units - 1)
+        row.booked_units += 1
         row.locked_by_booking_id = None
         row.lock_expires_at = None
-        row.status = (
-            models.InventoryStatus.BLOCKED
-            if row.available_units <= 0
-            else models.InventoryStatus.AVAILABLE
-        )
+        row.status = derive_inventory_status(row)
 
 
 def release_inventory_for_booking(db, *, booking: models.Booking) -> int:
@@ -250,11 +267,7 @@ def release_inventory_for_booking(db, *, booking: models.Booking) -> int:
         row.locked_units = 0
         row.locked_by_booking_id = None
         row.lock_expires_at = None
-        row.status = (
-            models.InventoryStatus.BLOCKED
-            if row.available_units <= 0
-            else models.InventoryStatus.AVAILABLE
-        )
+        row.status = derive_inventory_status(row)
     return len(rows)
 
 
@@ -292,6 +305,10 @@ def upsert_inventory_range(
     end_date: date,
     total_units: int,
     available_units: int | None,
+    blocked_units: int | None = None,
+    block_reason: str | None = None,
+    price_override: float | None = None,
+    price_override_label: str | None = None,
     status: models.InventoryStatus,
 ) -> list[models.RoomInventory]:
     current = start_date
@@ -304,8 +321,16 @@ def upsert_inventory_range(
             default_total_units=total_units,
         )
         row.total_units = total_units
-        row.available_units = total_units if available_units is None else available_units
+        if available_units is not None:
+            row.available_units = available_units
+        else:
+            row.available_units = total_units
         row.locked_units = 0
+        row.booked_units = 0
+        row.blocked_units = blocked_units or 0
+        row.block_reason = block_reason
+        row.price_override = price_override
+        row.price_override_label = price_override_label
         row.locked_by_booking_id = None
         row.lock_expires_at = None
         row.status = status

@@ -19,6 +19,9 @@ from routers.auth import (
     normalize_email,
 )
 from services.inventory_service import (
+    calculate_effective_price,
+    get_or_create_inventory_rows_for_stay,
+    iter_stay_dates,
     lock_inventory_for_booking,
     release_expired_inventory_locks,
     release_inventory_for_booking,
@@ -63,6 +66,36 @@ def calculate_booking_amount(room: models.Room, nights: int):
     service_fee = round(room_total * 0.05, 2)
     total = round(room_total + taxes + service_fee, 2)
     return room_total, taxes, service_fee, total
+
+
+def calculate_booking_amount_for_dates(
+    db: Session,
+    *,
+    room: models.Room,
+    check_in: datetime,
+    check_out: datetime,
+):
+    inventory_rows = get_or_create_inventory_rows_for_stay(
+        db,
+        room_id=room.id,
+        check_in=check_in,
+        check_out=check_out,
+        default_total_units=room.total_room_count,
+    )
+    rows_by_date = {row.inventory_date: row for row in inventory_rows}
+    room_total = 0.0
+    nights = 0
+    for stay_date in iter_stay_dates(check_in, check_out):
+        room_total += calculate_effective_price(
+            room,
+            inventory_date=stay_date,
+            inventory_row=rows_by_date.get(stay_date),
+        )
+        nights += 1
+    taxes = round(room_total * 0.12, 2)
+    service_fee = round(room_total * 0.05, 2)
+    total = round(room_total + taxes + service_fee, 2)
+    return round(room_total, 2), taxes, service_fee, total, nights
 
 
 def expire_stale_booking_hold(booking: models.Booking, now: Optional[datetime] = None) -> bool:
@@ -223,7 +256,7 @@ def create_booking(
             code=error_codes.ROOM_NOT_FOUND,
             message="Room not found",
         )
-    if not room.availability:
+    if not room.availability or not room.is_active or room.deleted_at is not None:
         raise booking_error(
             status_code=400,
             code=error_codes.ROOM_UNAVAILABLE,
@@ -325,7 +358,12 @@ def create_booking(
             field="date_range",
         )
 
-    room_rate, taxes, service_fee, total = calculate_booking_amount(room, nights)
+    room_rate, taxes, service_fee, total, nights = calculate_booking_amount_for_dates(
+        db,
+        room=room,
+        check_in=check_in,
+        check_out=check_out,
+    )
     db_booking = models.Booking(
         booking_ref=generate_booking_ref(),
         user_name=booking_data.user_name,

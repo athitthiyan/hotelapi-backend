@@ -786,9 +786,15 @@ class TestPartnerCoverageEdges:
             headers=headers,
             json={
                 "room_type": "suite",
+                "room_type_name": "Edge Suite",
                 "description": "Edge room",
                 "price": 4500,
                 "availability": True,
+                "total_room_count": 4,
+                "weekend_price": 4800,
+                "holiday_price": 5200,
+                "extra_guest_charge": 500,
+                "is_active": True,
                 "gallery_urls": ["https://example.com/1.jpg"],
                 "amenities": ["WiFi"],
                 "location": "Marina",
@@ -822,7 +828,7 @@ class TestPartnerCoverageEdges:
             "/partner/calendar",
             headers=headers,
             json={
-                "room_id": room_id,
+                "room_type_id": room_id,
                 "start_date": start_date,
                 "end_date": start_date,
                 "total_units": 3,
@@ -836,7 +842,7 @@ class TestPartnerCoverageEdges:
             "/partner/calendar",
             headers=headers,
             json={
-                "room_id": room_id,
+                "room_type_id": room_id,
                 "start_date": start_date,
                 "end_date": start_date,
                 "total_units": 4,
@@ -846,7 +852,7 @@ class TestPartnerCoverageEdges:
         )
         assert second_calendar.status_code == 200
         target_day = next(day for day in second_calendar.json()["days"] if day["date"] == start_date)
-        assert target_day["available_units"] == 4
+        assert target_day["available_units"] == 2
 
         payout_first = client.get("/partner/payouts", headers=headers)
         payout_second = client.get("/partner/payouts", headers=headers)
@@ -872,9 +878,15 @@ class TestPartnerCoverageEdges:
             headers=headers,
             json={
                 "room_type": "suite",
+                "room_type_name": "Payout Suite",
                 "description": "Payout room",
                 "price": 5500,
                 "availability": True,
+                "total_room_count": 6,
+                "weekend_price": 5800,
+                "holiday_price": 6200,
+                "extra_guest_charge": 650,
+                "is_active": True,
                 "gallery_urls": ["https://example.com/a.jpg", "https://example.com/b.jpg"],
                 "amenities": ["WiFi", "Pool"],
                 "location": "ECR",
@@ -936,9 +948,15 @@ class TestPartnerCoverageEdges:
             headers=headers,
             json={
                 "room_type": "suite",
+                "room_type_name": "Existing Payout Suite",
                 "description": "Existing payout room",
                 "price": 6000,
                 "availability": True,
+                "total_room_count": 5,
+                "weekend_price": 6400,
+                "holiday_price": 6800,
+                "extra_guest_charge": 700,
+                "is_active": True,
                 "gallery_urls": [],
                 "amenities": [],
                 "location": "OMR",

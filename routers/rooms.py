@@ -11,6 +11,7 @@ from database import get_db
 from routers.auth import get_current_admin
 from services.audit_service import write_audit_log
 from services.inventory_service import (
+    calculate_effective_price,
     iter_stay_dates,
     release_expired_inventory_locks,
     upsert_inventory_range,
@@ -77,7 +78,11 @@ def get_rooms(
     if cached:
         return cached
 
-    room_query = db.query(models.Room).filter(models.Room.availability.is_(True))
+    room_query = db.query(models.Room).filter(
+        models.Room.availability.is_(True),
+        models.Room.is_active.is_(True),
+        models.Room.deleted_at.is_(None),
+    )
 
     if query:
         like_pattern = f"%{query}%"
@@ -126,6 +131,25 @@ def get_rooms(
         )
 
     rooms = room_query.all()
+    if check_in:
+        check_in_date = datetime.fromisoformat(check_in).date()
+        inventory_rows = []
+        if rooms:
+            inventory_rows = (
+                db.query(models.RoomInventory)
+                .filter(
+                    models.RoomInventory.room_id.in_([room.id for room in rooms]),
+                    models.RoomInventory.inventory_date == check_in_date,
+                )
+                .all()
+            )
+        by_room = {row.room_id: row for row in inventory_rows}
+        for room in rooms:
+            room.price = calculate_effective_price(
+                room,
+                inventory_date=check_in_date,
+                inventory_row=by_room.get(room.id),
+            )
     rooms = sort_rooms(rooms, sort_by)
     total = len(rooms)
     paginated_rooms = rooms[(page - 1) * per_page : page * per_page]
@@ -139,7 +163,9 @@ def get_rooms(
 def get_featured_rooms(limit: int = Query(6), db: Session = Depends(get_db)):
     return db.query(models.Room).filter(
         models.Room.is_featured.is_(True),
-        models.Room.availability.is_(True)
+        models.Room.availability.is_(True),
+        models.Room.is_active.is_(True),
+        models.Room.deleted_at.is_(None),
     ).limit(limit).all()
 
 
@@ -159,7 +185,11 @@ def get_destinations(
             ),
             func.avg(models.Room.price).label("average_price"),
         )
-        .filter(models.Room.availability.is_(True))
+        .filter(
+            models.Room.availability.is_(True),
+            models.Room.is_active.is_(True),
+            models.Room.deleted_at.is_(None),
+        )
         .group_by(models.Room.city, models.Room.country)
     )
 
@@ -216,7 +246,11 @@ def get_room_unavailable_dates(
     if to_date < from_date:
         raise HTTPException(status_code=400, detail="to_date must be >= from_date")
 
-    room = db.query(models.Room).filter(models.Room.id == room_id).first()
+    room = db.query(models.Room).filter(
+        models.Room.id == room_id,
+        models.Room.deleted_at.is_(None),
+        models.Room.is_active.is_(True),
+    ).first()
     if not room:
         raise HTTPException(status_code=404, detail="Room not found")
 
@@ -291,7 +325,11 @@ def get_room_unavailable_dates(
 
 @router.get("/{room_id}", response_model=schemas.RoomResponse)
 def get_room(room_id: int, db: Session = Depends(get_db)):
-    room = db.query(models.Room).filter(models.Room.id == room_id).first()
+    room = db.query(models.Room).filter(
+        models.Room.id == room_id,
+        models.Room.deleted_at.is_(None),
+        models.Room.is_active.is_(True),
+    ).first()
     if not room:
         raise HTTPException(status_code=404, detail="Room not found")
     return room

@@ -67,10 +67,16 @@ class InventoryStatus(str, Enum):
 class RoomBase(BaseModel):
     hotel_name: str
     room_type: RoomType
+    room_type_name: Optional[str] = None
     description: Optional[str] = None
     price: float
     original_price: Optional[float] = None
+    total_room_count: int = 1
+    weekend_price: Optional[float] = None
+    holiday_price: Optional[float] = None
+    extra_guest_charge: float = 0.0
     availability: bool = True
+    is_active: bool = True
     rating: float = 4.5
     review_count: int = 0
     image_url: Optional[str] = None
@@ -496,10 +502,16 @@ class PartnerHotelResponse(PartnerHotelBase):
 
 class PartnerRoomCreate(BaseModel):
     room_type: RoomType
+    room_type_name: str = Field(min_length=2, max_length=120)
     description: Optional[str] = None
     price: float = Field(gt=0)
     original_price: Optional[float] = Field(default=None, gt=0)
+    total_room_count: int = Field(default=1, ge=1, le=1000)
+    weekend_price: Optional[float] = Field(default=None, gt=0)
+    holiday_price: Optional[float] = Field(default=None, gt=0)
+    extra_guest_charge: float = Field(default=0, ge=0)
     availability: bool = True
+    is_active: bool = True
     image_url: Optional[str] = None
     gallery_urls: List[str] = Field(default_factory=list)
     amenities: List[str] = Field(default_factory=list)
@@ -515,10 +527,16 @@ class PartnerRoomCreate(BaseModel):
 
 class PartnerRoomUpdate(BaseModel):
     room_type: Optional[RoomType] = None
+    room_type_name: Optional[str] = Field(default=None, min_length=2, max_length=120)
     description: Optional[str] = None
     price: Optional[float] = Field(default=None, gt=0)
     original_price: Optional[float] = Field(default=None, gt=0)
+    total_room_count: Optional[int] = Field(default=None, ge=1, le=1000)
+    weekend_price: Optional[float] = Field(default=None, gt=0)
+    holiday_price: Optional[float] = Field(default=None, gt=0)
+    extra_guest_charge: Optional[float] = Field(default=None, ge=0)
     availability: Optional[bool] = None
+    is_active: Optional[bool] = None
     image_url: Optional[str] = None
     gallery_urls: Optional[List[str]] = None
     amenities: Optional[List[str]] = None
@@ -537,13 +555,20 @@ class PartnerRoomResponse(BaseModel):
     partner_hotel_id: Optional[int] = None
     hotel_name: str
     room_type: RoomType
+    room_type_name: str
     description: Optional[str] = None
     price: float
     original_price: Optional[float] = None
+    total_room_count: int
+    weekend_price: Optional[float] = None
+    holiday_price: Optional[float] = None
+    extra_guest_charge: float = 0.0
     availability: bool
+    is_active: bool
     image_url: Optional[str] = None
     gallery_urls: List[str] = Field(default_factory=list)
     amenities: List[str] = Field(default_factory=list)
+    location: Optional[str] = None
     city: Optional[str] = None
     country: Optional[str] = None
     max_guests: int
@@ -597,6 +622,12 @@ class PartnerCalendarDay(BaseModel):
     total_units: int
     available_units: int
     locked_units: int
+    booked_units: int
+    blocked_units: int
+    effective_price: float
+    block_reason: Optional[str] = None
+    price_override: Optional[float] = None
+    price_override_label: Optional[str] = None
     status: InventoryStatus
 
 
@@ -606,12 +637,14 @@ class PartnerCalendarResponse(BaseModel):
     days: List[PartnerCalendarDay]
 
 
-class PartnerCalendarUpdateRequest(BaseModel):
-    room_id: int = Field(gt=0)
+class PartnerInventoryUpdateRequest(BaseModel):
+    room_type_id: int = Field(gt=0)
     start_date: date
     end_date: date
-    total_units: int = Field(ge=0, le=1000)
+    total_units: Optional[int] = Field(default=None, ge=0, le=1000)
     available_units: Optional[int] = Field(default=None, ge=0, le=1000)
+    blocked_units: Optional[int] = Field(default=None, ge=0, le=1000)
+    block_reason: Optional[str] = Field(default=None, max_length=120)
     status: InventoryStatus = InventoryStatus.AVAILABLE
 
 
@@ -699,7 +732,12 @@ class InventoryResponse(BaseModel):
     total_units: int
     available_units: int
     locked_units: int
+    booked_units: int
+    blocked_units: int
     status: InventoryStatus
+    block_reason: Optional[str] = None
+    price_override: Optional[float] = None
+    price_override_label: Optional[str] = None
     locked_by_booking_id: Optional[int] = None
     lock_expires_at: Optional[datetime] = None
 
@@ -709,6 +747,30 @@ class InventoryResponse(BaseModel):
 class InventoryListResponse(BaseModel):
     inventory: List[InventoryResponse]
     total: int
+
+
+class PartnerPricingUpdateRequest(BaseModel):
+    room_type_id: int = Field(gt=0)
+    start_date: date
+    end_date: date
+    price: float = Field(gt=0)
+    label: Optional[str] = Field(default=None, max_length=120)
+
+
+class PartnerPricingCalendarDay(BaseModel):
+    date: str
+    base_price: float
+    weekend_price: Optional[float] = None
+    holiday_price: Optional[float] = None
+    effective_price: float
+    override_price: Optional[float] = None
+    override_label: Optional[str] = None
+
+
+class PartnerPricingCalendarResponse(BaseModel):
+    room_type_id: int
+    hotel_id: int
+    days: List[PartnerPricingCalendarDay]
 
 
 # ─── User Profile ─────────────────────────────────────────────────────────────

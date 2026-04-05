@@ -139,10 +139,16 @@ class Room(Base):
         ),
         nullable=False,
     )
+    room_type_name = Column(String(120), nullable=False, default="Standard")
     description = Column(Text)
     price = Column(Float, nullable=False)
     original_price = Column(Float)
+    total_room_count = Column(Integer, default=1, nullable=False)
+    weekend_price = Column(Float)
+    holiday_price = Column(Float)
+    extra_guest_charge = Column(Float, default=0.0, nullable=False)
     availability = Column(Boolean, default=True)
+    is_active = Column(Boolean, default=True, nullable=False)
     rating = Column(Float, default=4.5)
     review_count = Column(Integer, default=0)
     image_url = Column(String(500))
@@ -157,6 +163,7 @@ class Room(Base):
     size_sqft = Column(Integer)
     floor = Column(Integer)
     is_featured = Column(Boolean, default=False)
+    deleted_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -277,6 +284,8 @@ class RoomInventory(Base):
     total_units = Column(Integer, default=1, nullable=False)
     available_units = Column(Integer, default=1, nullable=False)
     locked_units = Column(Integer, default=0, nullable=False)
+    booked_units = Column(Integer, default=0, nullable=False)
+    blocked_units = Column(Integer, default=0, nullable=False)
     status = Column(
         Enum(
             InventoryStatus,
@@ -285,6 +294,9 @@ class RoomInventory(Base):
         ),
         default=InventoryStatus.AVAILABLE,
     )
+    block_reason = Column(String(120))
+    price_override = Column(Float)
+    price_override_label = Column(String(120))
     locked_by_booking_id = Column(Integer, ForeignKey("bookings.id"))
     lock_expires_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
