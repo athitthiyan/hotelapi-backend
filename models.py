@@ -64,6 +64,15 @@ class RefundStatus(str, enum.Enum):
     REFUND_REVERSED = "refund_reversed"
 
 
+class PayoutStatus(str, enum.Enum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    SETTLED = "settled"
+    FAILED = "failed"
+    REVERSED = "reversed"
+    LEGACY_PAID = "paid"
+
+
 class NotificationStatus(str, enum.Enum):
     PENDING = "pending"
     SENT = "sent"
@@ -351,9 +360,19 @@ class PartnerPayout(Base):
     commission_amount = Column(Float, nullable=False, default=0.0)
     net_amount = Column(Float, nullable=False, default=0.0)
     currency = Column(String(10), default="INR", nullable=False)
-    status = Column(String(30), default="pending", nullable=False, index=True)
+    status = Column(
+        Enum(
+            PayoutStatus,
+            name="payout_status",
+            values_callable=enum_values,
+        ),
+        default=PayoutStatus.PENDING,
+        nullable=False,
+        index=True,
+    )
     payout_reference = Column(String(100), unique=True, index=True)
     payout_date = Column(DateTime(timezone=True))
+    statement_generated_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

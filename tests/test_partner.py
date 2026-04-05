@@ -259,6 +259,11 @@ class TestPartnerOperations:
         assert payouts.json()["total"] == 1
         assert payouts.json()["payouts"][0]["status"] == "pending"
 
+        statement = client.get("/partner/payouts/statement", headers=auth_header(token))
+        assert statement.status_code == 200
+        assert statement.headers["content-type"].startswith("text/csv")
+        assert "payout_id,booking_id,status,gross_amount,commission_amount,net_amount,currency,payout_reference,payout_date,created_at" in statement.text
+
         unblock = client.post(
             "/partner/inventory/unblock",
             headers=auth_header(token),
@@ -359,6 +364,62 @@ class TestPartnerOperations:
 
         assert response.status_code == 409
         assert response.json()["detail"]["code"] == "INVENTORY_CONFLICT"
+
+    def test_partner_revenue_distinguishes_pending_and_settled_payouts(self, client, db_session):
+        token = create_partner_and_token(client)
+        room_id = create_room_for_partner(client, token)
+        now = datetime.now(timezone.utc)
+        booking = models.Booking(
+            booking_ref="BKPAYOUT1",
+            user_name="Guest User",
+            email="guest@example.com",
+            room_id=room_id,
+            check_in=now + timedelta(days=1),
+            check_out=now + timedelta(days=2),
+            guests=2,
+            nights=1,
+            room_rate=4500,
+            taxes=100,
+            service_fee=0,
+            total_amount=4600,
+            status=models.BookingStatus.CONFIRMED,
+            payment_status=models.PaymentStatus.PAID,
+        )
+        db_session.add(booking)
+        db_session.commit()
+
+        partner_user = db_session.query(models.User).filter(models.User.email == "partner@example.com").first()
+        hotel = db_session.query(models.PartnerHotel).filter(models.PartnerHotel.owner_user_id == partner_user.id).first()
+        db_session.add_all(
+            [
+                models.PartnerPayout(
+                    hotel_id=hotel.id,
+                    booking_id=booking.id,
+                    gross_amount=4600,
+                    commission_amount=690,
+                    net_amount=3910,
+                    currency="INR",
+                    status=models.PayoutStatus.PENDING,
+                    payout_reference="payout_pending_001",
+                ),
+                models.PartnerPayout(
+                    hotel_id=hotel.id,
+                    booking_id=None,
+                    gross_amount=9200,
+                    commission_amount=1380,
+                    net_amount=7820,
+                    currency="INR",
+                    status=models.PayoutStatus.SETTLED,
+                    payout_reference="payout_settled_001",
+                ),
+            ]
+        )
+        db_session.commit()
+
+        revenue = client.get("/partner/revenue", headers=auth_header(token))
+        assert revenue.status_code == 200
+        assert revenue.json()["pending_payouts"] == 3910
+        assert revenue.json()["paid_out"] == 7820
 
     def test_customer_search_reflects_partner_inventory_and_pricing(self, client):
         token = create_partner_and_token(client)

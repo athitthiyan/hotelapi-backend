@@ -59,6 +59,14 @@ class RefundStatus(str, Enum):
     REFUND_REVERSED = "refund_reversed"
 
 
+class PayoutStatus(str, Enum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    SETTLED = "settled"
+    FAILED = "failed"
+    REVERSED = "reversed"
+
+
 class NotificationStatus(str, Enum):
     PENDING = "pending"
     SENT = "sent"
@@ -658,9 +666,10 @@ class PartnerPayoutResponse(BaseModel):
     commission_amount: float
     net_amount: float
     currency: str
-    status: str
+    status: PayoutStatus
     payout_reference: Optional[str] = None
     payout_date: Optional[datetime] = None
+    statement_generated_at: Optional[datetime] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

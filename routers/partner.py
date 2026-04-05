@@ -1,8 +1,12 @@
 import json
+import csv
+import io
 import uuid
+import enum
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, joinedload
 
 import models
@@ -218,6 +222,32 @@ def _serialize_partner_room(room: models.Room) -> schemas.PartnerRoomResponse:
 
 def _hotel_response(hotel: models.PartnerHotel) -> schemas.PartnerHotelResponse:
     return schemas.PartnerHotelResponse.model_validate(hotel)
+
+
+def _is_pending_payout(status: models.PayoutStatus | str) -> bool:
+    normalized = status.value if isinstance(status, enum.Enum) else status
+    return normalized in {
+        models.PayoutStatus.PENDING.value,
+        models.PayoutStatus.PROCESSING.value,
+    }
+
+
+def _is_settled_payout(status: models.PayoutStatus | str) -> bool:
+    normalized = status.value if isinstance(status, enum.Enum) else status
+    return normalized in {
+        models.PayoutStatus.SETTLED.value,
+        models.PayoutStatus.LEGACY_PAID.value,
+    }
+
+
+def _normalize_legacy_payout_statuses(payouts: list[models.PartnerPayout]) -> bool:
+    updated = False
+    for payout in payouts:
+        normalized = payout.status.value if isinstance(payout.status, enum.Enum) else payout.status
+        if normalized == models.PayoutStatus.LEGACY_PAID.value:
+            payout.status = models.PayoutStatus.SETTLED
+            updated = True
+    return updated
 
 
 @router.post("/register", response_model=schemas.TokenResponse, status_code=201)
@@ -541,8 +571,16 @@ def get_partner_revenue(
         .filter(models.PartnerPayout.hotel_id == hotel.id)
         .all()
     )
-    pending_payouts = sum(payout.net_amount for payout in payouts if payout.status != "paid")
-    paid_out = sum(payout.net_amount for payout in payouts if payout.status == "paid")
+    pending_payouts = sum(
+        payout.net_amount
+        for payout in payouts
+        if _is_pending_payout(payout.status)
+    )
+    paid_out = sum(
+        payout.net_amount
+        for payout in payouts
+        if _is_settled_payout(payout.status)
+    )
     return schemas.PartnerRevenueSummary(
         total_bookings=len(bookings),
         confirmed_bookings=sum(
@@ -591,7 +629,7 @@ def get_partner_payouts(
                 commission_amount=commission_amount,
                 net_amount=round(gross_amount - commission_amount, 2),
                 currency="INR",
-                status="pending",
+                status=models.PayoutStatus.PENDING,
                 payout_reference=f"payout_{uuid.uuid4().hex[:12]}",
             )
             db.add(payout)
@@ -602,7 +640,65 @@ def get_partner_payouts(
             .order_by(models.PartnerPayout.created_at.desc(), models.PartnerPayout.id.desc())
             .all()
         )
+    if _normalize_legacy_payout_statuses(payouts):
+        db.commit()
     return schemas.PartnerPayoutListResponse(payouts=payouts, total=len(payouts))
+
+
+@router.get("/payouts/statement")
+def download_partner_payout_statement(
+    partner_user: models.User = Depends(get_current_partner),
+    db: Session = Depends(get_db),
+):
+    hotel = _get_partner_hotel_or_404(db, partner_user.id)
+    payouts = (
+        db.query(models.PartnerPayout)
+        .filter(models.PartnerPayout.hotel_id == hotel.id)
+        .order_by(models.PartnerPayout.created_at.desc(), models.PartnerPayout.id.desc())
+        .all()
+    )
+    _normalize_legacy_payout_statuses(payouts)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "payout_id",
+            "booking_id",
+            "status",
+            "gross_amount",
+            "commission_amount",
+            "net_amount",
+            "currency",
+            "payout_reference",
+            "payout_date",
+            "created_at",
+        ]
+    )
+    generated_at = datetime.now(timezone.utc)
+    for payout in payouts:
+        payout.statement_generated_at = generated_at
+        writer.writerow(
+            [
+                payout.id,
+                payout.booking_id or "",
+                payout.status.value if isinstance(payout.status, enum.Enum) else payout.status,
+                f"{payout.gross_amount:.2f}",
+                f"{payout.commission_amount:.2f}",
+                f"{payout.net_amount:.2f}",
+                payout.currency,
+                payout.payout_reference or "",
+                payout.payout_date.isoformat() if payout.payout_date else "",
+                payout.created_at.isoformat() if payout.created_at else "",
+            ]
+        )
+    db.commit()
+    filename = f"stayvora-payout-statement-{hotel.id}-{generated_at.date().isoformat()}.csv"
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue().encode("utf-8")]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def _partner_calendar_response(
