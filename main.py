@@ -56,7 +56,7 @@ _HARDCODED_ORIGINS = [
     "https://stayease-booking-app-git-main-athitthiyans-projects.vercel.app",
     "https://payflow-payment-app.vercel.app",
     "https://insightboard-admin.vercel.app",
-    "https://partner-portal.vercel.app",
+    "https://stayease-partner-portal.vercel.app",
 ]
 _env_origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
 origins = list(set(_env_origins + _HARDCODED_ORIGINS))
