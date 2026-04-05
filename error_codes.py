@@ -1,4 +1,4 @@
-"""Structured API error codes for StayEase booking flow."""
+"""Structured API error codes for Stayvora booking flow."""
 
 from typing import Optional
 from fastapi import HTTPException

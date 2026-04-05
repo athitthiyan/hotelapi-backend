@@ -16,8 +16,8 @@ def partner_payload(**overrides):
         "email": "partner@example.com",
         "full_name": "Partner Owner",
         "password": "PartnerPass123",
-        "legal_name": "StayEase Chennai Pvt Ltd",
-        "display_name": "StayEase Marina Suites",
+        "legal_name": "Stayvora Chennai Pvt Ltd",
+        "display_name": "Stayvora Marina Suites",
         "support_email": "support@marina.example.com",
         "support_phone": "9876543210",
         "address_line": "12 Marina Road",
@@ -26,7 +26,7 @@ def partner_payload(**overrides):
         "country": "India",
         "postal_code": "600001",
         "gst_number": "33ABCDE1234F1Z5",
-        "bank_account_name": "StayEase Marina Suites",
+        "bank_account_name": "Stayvora Marina Suites",
         "bank_account_number": "123456789012",
         "bank_ifsc": "HDFC0001234",
         "bank_upi_id": "marina@upi",
@@ -91,7 +91,7 @@ class TestPartnerAuth:
             .first()
         )
         assert hotel is not None
-        assert hotel.display_name == "StayEase Marina Suites"
+        assert hotel.display_name == "Stayvora Marina Suites"
         assert hotel.bank_account_number_masked == "********9012"
 
     def test_partner_login_blocks_non_partner_user(self, client, db_session):

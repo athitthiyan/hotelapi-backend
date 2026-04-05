@@ -81,7 +81,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="HotelAPI - Portfolio Backend",
-    description="Unified backend for StayEase Booking, PayFlow Payment Gateway and InsightBoard Admin",
+    description="Unified backend for Stayvora Booking, PayFlow Payment Gateway and InsightBoard Admin",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -91,6 +91,8 @@ app = FastAPI(
 
 # Always-allowed production origins (code-level guarantee, not reliant on env var)
 _HARDCODED_ORIGINS = [
+    "https://stayvora.co.in",
+    "https://www.stayvora.co.in",
     "https://stayease-booking-app.vercel.app",
     "https://stayease-booking-app-git-main-athitthiyans-projects.vercel.app",
     "https://payflow-payment-app.vercel.app",
@@ -393,7 +395,7 @@ def seed_database(db=None):
         if not partner_hotel:
             partner_hotel = models.PartnerHotel(
                 owner_user_id=partner_user.id,
-                legal_name="StayEase Hospitality Private Limited",
+                legal_name="Stayvora Hospitality Private Limited",
                 display_name=settings.seed_partner_hotel_name,
                 gst_number="33ABCDE1234F1Z5",
                 support_email=settings.seed_partner_email,
@@ -403,14 +405,14 @@ def seed_database(db=None):
                 state="Tamil Nadu",
                 country="India",
                 postal_code="600001",
-                description="Partner demo hotel for StayEase onboarding, room operations, and payout testing.",
+                description="Partner demo hotel for Stayvora onboarding, room operations, and payout testing.",
                 verified_badge=True,
                 instant_confirmation_enabled=True,
                 free_cancellation_enabled=True,
                 bank_account_name=settings.seed_partner_hotel_name,
                 bank_account_number_masked="********9012",
                 bank_ifsc="HDFC0001234",
-                bank_upi_id="stayeasepartner@upi",
+                bank_upi_id="stayvora@upi",
             )
             db.add(partner_hotel)
             db.flush()
