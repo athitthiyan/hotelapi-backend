@@ -33,6 +33,14 @@ router = APIRouter(prefix="/bookings", tags=["Bookings"])
 BOOKING_HOLD_MINUTES = 10
 
 
+def resolve_authenticated_booking_user(
+    current_user: Optional[models.User],
+) -> Optional[models.User]:
+    if isinstance(current_user, models.User):
+        return current_user
+    return None
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -207,6 +215,7 @@ def create_booking(
     db: Session = Depends(get_db),
     current_user: Optional[models.User] = Depends(get_optional_current_user),
 ):
+    current_user = resolve_authenticated_booking_user(current_user)
     room = db.query(models.Room).filter(models.Room.id == booking_data.room_id).first()
     if not room:
         raise booking_error(
