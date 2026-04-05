@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 import models
@@ -18,6 +19,10 @@ ALGORITHM = "HS256"
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
 
 
 def hash_password(password: str) -> str:
@@ -126,13 +131,14 @@ def get_current_partner(user: models.User = Depends(get_current_user)) -> models
 
 @router.post("/signup", response_model=schemas.TokenResponse, status_code=201)
 def signup(payload: schemas.UserSignup, request: Request, db: Session = Depends(get_db)):
-    enforce_rate_limit("auth:signup", request, subject=payload.email.lower())
-    existing_user = db.query(models.User).filter(models.User.email == payload.email).first()
+    normalized_email = normalize_email(payload.email)
+    enforce_rate_limit("auth:signup", request, subject=normalized_email)
+    existing_user = db.query(models.User).filter(models.User.email == normalized_email).first()
     if existing_user:
         raise HTTPException(status_code=409, detail="Email already registered")
 
     user = models.User(
-        email=payload.email,
+        email=normalized_email,
         full_name=payload.full_name,
         hashed_password=hash_password(payload.password),
         is_admin=False,
@@ -147,8 +153,9 @@ def signup(payload: schemas.UserSignup, request: Request, db: Session = Depends(
 
 @router.post("/login", response_model=schemas.TokenResponse)
 def login(payload: schemas.UserLogin, request: Request, db: Session = Depends(get_db)):
-    enforce_rate_limit("auth:login", request, subject=payload.email.lower())
-    user = db.query(models.User).filter(models.User.email == payload.email).first()
+    normalized_email = normalize_email(payload.email)
+    enforce_rate_limit("auth:login", request, subject=normalized_email)
+    user = db.query(models.User).filter(models.User.email == normalized_email).first()
     if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.is_active:
@@ -217,7 +224,7 @@ def forgot_password(
     db: Session = Depends(get_db),
 ):
     enforce_rate_limit("auth:forgot-password", request, subject=payload.email.lower())
-    user = db.query(models.User).filter(models.User.email == payload.email.lower()).first()
+    user = db.query(models.User).filter(models.User.email == normalize_email(payload.email)).first()
     # Always return 200 to prevent email enumeration
     if user and user.is_active:
         raw_token = secrets.token_urlsafe(32)
@@ -304,17 +311,18 @@ async def social_login(
     avatar_url: str | None = google_data.get("picture")
     if not google_id or not email:
         raise HTTPException(status_code=400, detail="Insufficient data from Google")
+    normalized_email = normalize_email(email)
     # Find or create user
     user = db.query(models.User).filter(models.User.google_id == google_id).first()
     if not user:
-        user = db.query(models.User).filter(models.User.email == email.lower()).first()
+        user = db.query(models.User).filter(models.User.email == normalized_email).first()
         if user:
             user.google_id = google_id
             if avatar_url and not user.avatar_url:
                 user.avatar_url = avatar_url
         else:
             user = models.User(
-                email=email.lower(),
+                email=normalized_email,
                 full_name=full_name,
                 google_id=google_id,
                 avatar_url=avatar_url,
@@ -342,7 +350,12 @@ def my_bookings(
     bookings = (
         db.query(models.Booking)
         .options(joinedload(models.Booking.room))
-        .filter(models.Booking.email == user.email)
+        .filter(
+            or_(
+                models.Booking.user_id == user.id,
+                models.Booking.email == user.email,
+            )
+        )
         .order_by(models.Booking.created_at.desc())
         .all()
     )

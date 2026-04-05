@@ -86,6 +86,7 @@ class User(Base):
     reviews = relationship("Review", back_populates="user")
     wishlists = relationship("Wishlist", back_populates="user")
     partner_hotels = relationship("PartnerHotel", back_populates="owner")
+    bookings = relationship("Booking", back_populates="user")
 
 
 class PartnerHotel(Base):
@@ -172,6 +173,7 @@ class Booking(Base):
     booking_ref = Column(String(20), unique=True, index=True)
     user_name = Column(String(100), nullable=False)
     email = Column(String(200), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     phone = Column(String(20))
     room_id = Column(Integer, ForeignKey("rooms.id"), nullable=False)
     check_in = Column(DateTime(timezone=True), nullable=False)
@@ -204,6 +206,7 @@ class Booking(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     room = relationship("Room", back_populates="bookings")
+    user = relationship("User", back_populates="bookings")
     transactions = relationship("Transaction", back_populates="booking")
 
 
@@ -264,6 +267,9 @@ class NotificationOutbox(Base):
 
 class RoomInventory(Base):
     __tablename__ = "room_inventory"
+    __table_args__ = (
+        UniqueConstraint("room_id", "inventory_date", name="uq_room_inventory_room_date"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     room_id = Column(Integer, ForeignKey("rooms.id"), nullable=False, index=True)

@@ -29,7 +29,7 @@ from services.rate_limit_service import enforce_rate_limit
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
-RECONCILIATION_TIMEOUT_MINUTES = 30
+RECONCILIATION_TIMEOUT_MINUTES = 5
 FAILED_PAYMENT_BLOCK_WINDOW_MINUTES = 30
 FAILED_PAYMENT_BLOCK_THRESHOLD = 3
 
@@ -334,6 +334,41 @@ def upsert_success_transaction(
     return get_transaction_with_booking(db, transaction.id)
 
 
+def get_successful_or_processing_response(
+    db: Session,
+    booking: models.Booking,
+    transaction_ref: str,
+    payment_method: str,
+    payment_intent_id: Optional[str] = None,
+    card_last4: Optional[str] = None,
+    card_brand: Optional[str] = None,
+) -> models.Transaction:
+    if payment_method == "mock":
+        return upsert_success_transaction(
+            db=db,
+            booking=booking,
+            transaction_ref=transaction_ref,
+            payment_method=payment_method,
+            payment_intent_id=payment_intent_id,
+            card_last4=card_last4,
+            card_brand=card_brand,
+        )
+
+    existing_success = get_success_transaction_for_booking(db, booking.id)
+    if existing_success:
+        return get_transaction_with_booking(db, existing_success.id)
+
+    return mark_transaction_processing(
+        db=db,
+        booking=booking,
+        transaction_ref=transaction_ref,
+        payment_method=payment_method,
+        payment_intent_id=payment_intent_id,
+        card_last4=card_last4,
+        card_brand=card_brand,
+    )
+
+
 def mark_transaction_processing(
     db: Session,
     booking: models.Booking,
@@ -532,12 +567,13 @@ def create_payment_intent(
         db.commit()
         db.refresh(transaction)
         return build_payment_intent_response(transaction, booking, "stripe")
-    except stripe.error.StripeError as exc:
+    except Exception as exc:
         transaction.status = models.TransactionStatus.FAILED
-        transaction.failure_reason = str(exc.user_message)
+        message = getattr(exc, "user_message", None) or str(exc)
+        transaction.failure_reason = message
         apply_failed_state(booking)
         db.commit()
-        raise HTTPException(status_code=400, detail=str(exc.user_message))
+        raise HTTPException(status_code=400, detail=message)
 
 
 @router.post("/payment-success", response_model=schemas.TransactionResponse)
@@ -545,14 +581,13 @@ def confirm_payment_success(
     payload: schemas.PaymentSuccess,
     db: Session = Depends(get_db),
 ):
-    booking = ensure_booking_can_accept_payment(db, get_booking_or_404(db, payload.booking_id))
-
-    # For both mock and card payments, confirm success immediately.
-    # Card payments have already been verified by Stripe.js on the client before
-    # this endpoint is called (confirmCardPayment returned status=succeeded).
-    # A Stripe webhook would also fire for card payments, but upsert_success_transaction
-    # is idempotent so a duplicate webhook call is handled safely.
-    return upsert_success_transaction(
+    booking = get_booking_or_404(db, payload.booking_id)
+    if booking.payment_status == models.PaymentStatus.PAID:
+        existing_success = get_success_transaction_for_booking(db, booking.id)
+        if existing_success:
+            return get_transaction_with_booking(db, existing_success.id)
+    booking = ensure_booking_can_accept_payment(db, booking)
+    return get_successful_or_processing_response(
         db=db,
         booking=booking,
         transaction_ref=payload.transaction_ref,
@@ -576,6 +611,10 @@ def record_payment_failure(
     booking = get_booking_or_404(db, booking_id)
     release_expired_holds(db, booking_id=booking.id)
     db.refresh(booking)
+    if booking.status in [models.BookingStatus.CANCELLED, models.BookingStatus.EXPIRED]:
+        raise HTTPException(
+            status_code=400, detail="Cancelled or expired bookings cannot be updated"
+        )
     if expire_stale_booking_hold(booking):
         apply_expired_state(booking)
         db.commit()
@@ -635,6 +674,7 @@ def get_transactions(
     page: int = Query(1, ge=1),
     per_page: int = Query(10),
     db: Session = Depends(get_db),
+    _admin: models.User = Depends(get_current_admin),
 ):
     query = db.query(models.Transaction).options(
         joinedload(models.Transaction.booking).joinedload(models.Booking.room)
@@ -653,7 +693,11 @@ def get_transactions(
 
 
 @router.get("/transactions/{txn_id}", response_model=schemas.TransactionResponse)
-def get_transaction(txn_id: int, db: Session = Depends(get_db)):
+def get_transaction(
+    txn_id: int,
+    db: Session = Depends(get_db),
+    _admin: models.User = Depends(get_current_admin),
+):
     txn = (
         db.query(models.Transaction)
         .options(joinedload(models.Transaction.booking).joinedload(models.Booking.room))
@@ -786,6 +830,8 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         booking_id = int(payment_intent.get("metadata", {}).get("booking_id", 0))
         if booking_id:
             booking = get_booking_or_404(db, booking_id)
+            release_expired_holds(db, booking_id=booking.id)
+            db.refresh(booking)
             last4, brand = get_card_details(payment_intent)
             upsert_success_transaction(
                 db=db,

@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
+from threading import Lock
 from typing import Iterable
 
 import models
+from sqlalchemy.orm import Query
+
+
+_ROOM_LOCK_GUARD = Lock()
+_ROOM_LOCKS: dict[int, Lock] = {}
 
 
 def utc_now() -> datetime:
@@ -57,6 +64,80 @@ def get_or_create_inventory_row(
     return row
 
 
+def apply_inventory_row_lock(db, query: Query) -> Query:
+    bind = getattr(db, "bind", None)
+    dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
+    if dialect_name == "sqlite":
+        return query
+    return query.with_for_update()
+
+
+def uses_sqlite(db) -> bool:
+    bind = getattr(db, "bind", None)
+    return getattr(getattr(bind, "dialect", None), "name", "") == "sqlite"
+
+
+@contextmanager
+def inventory_lock_scope(db, room_id: int):
+    if not uses_sqlite(db):
+        yield
+        return
+
+    with _ROOM_LOCK_GUARD:
+        room_lock = _ROOM_LOCKS.setdefault(room_id, Lock())
+    with room_lock:
+        yield
+
+
+def get_or_create_inventory_rows_for_stay(
+    db,
+    *,
+    room_id: int,
+    check_in: datetime,
+    check_out: datetime,
+    default_total_units: int = 1,
+    for_update: bool = False,
+) -> list[models.RoomInventory]:
+    stay_dates = list(iter_stay_dates(check_in, check_out))
+    if not stay_dates:
+        return []
+
+    query = db.query(models.RoomInventory).filter(
+        models.RoomInventory.room_id == room_id,
+        models.RoomInventory.inventory_date.in_(stay_dates),
+    )
+    if for_update:
+        query = apply_inventory_row_lock(db, query)
+    existing_rows = query.all()
+    rows_by_date = {row.inventory_date: row for row in existing_rows}
+
+    missing_dates = [stay_date for stay_date in stay_dates if stay_date not in rows_by_date]
+    for inventory_date in missing_dates:
+        db.add(
+            models.RoomInventory(
+                room_id=room_id,
+                inventory_date=inventory_date,
+                total_units=default_total_units,
+                available_units=default_total_units,
+                locked_units=0,
+                status=models.InventoryStatus.AVAILABLE,
+            )
+        )
+
+    if missing_dates:
+        db.flush()
+        query = db.query(models.RoomInventory).filter(
+            models.RoomInventory.room_id == room_id,
+            models.RoomInventory.inventory_date.in_(stay_dates),
+        )
+        if for_update:
+            query = apply_inventory_row_lock(db, query)
+        existing_rows = query.all()
+        rows_by_date = {row.inventory_date: row for row in existing_rows}
+
+    return [rows_by_date[stay_date] for stay_date in stay_dates]
+
+
 def release_expired_inventory_locks(
     db,
     *,
@@ -101,8 +182,12 @@ def release_expired_inventory_locks(
 
 def is_inventory_available(db, *, room_id: int, check_in: datetime, check_out: datetime) -> bool:
     release_expired_inventory_locks(db, room_id=room_id)
-    for stay_date in iter_stay_dates(check_in, check_out):
-        row = get_or_create_inventory_row(db, room_id=room_id, inventory_date=stay_date)
+    for row in get_or_create_inventory_rows_for_stay(
+        db,
+        room_id=room_id,
+        check_in=check_in,
+        check_out=check_out,
+    ):
         if row.status == models.InventoryStatus.BLOCKED or row.available_units <= 0:
             return False
     return True
@@ -114,20 +199,27 @@ def lock_inventory_for_booking(
     booking: models.Booking,
     lock_expires_at: datetime,
 ) -> None:
-    release_expired_inventory_locks(db, room_id=booking.room_id, booking_id=booking.id)
-    for stay_date in iter_stay_dates(booking.check_in, booking.check_out):
-        row = get_or_create_inventory_row(db, room_id=booking.room_id, inventory_date=stay_date)
-        if row.status == models.InventoryStatus.BLOCKED or row.available_units <= 0:
-            raise ValueError("Inventory is not available for the selected dates")
-        row.available_units -= 1
-        row.locked_units += 1
-        row.locked_by_booking_id = booking.id
-        row.lock_expires_at = lock_expires_at
-        row.status = (
-            models.InventoryStatus.LOCKED
-            if row.available_units > 0
-            else models.InventoryStatus.BLOCKED
+    with inventory_lock_scope(db, booking.room_id):
+        release_expired_inventory_locks(db, room_id=booking.room_id, booking_id=booking.id)
+        rows = get_or_create_inventory_rows_for_stay(
+            db,
+            room_id=booking.room_id,
+            check_in=booking.check_in,
+            check_out=booking.check_out,
+            for_update=True,
         )
+        for row in rows:
+            if row.status == models.InventoryStatus.BLOCKED or row.available_units <= 0:
+                raise ValueError("Inventory is not available for the selected dates")
+            row.available_units -= 1
+            row.locked_units += 1
+            row.locked_by_booking_id = booking.id
+            row.lock_expires_at = lock_expires_at
+            row.status = (
+                models.InventoryStatus.LOCKED
+                if row.available_units > 0
+                else models.InventoryStatus.BLOCKED
+            )
 
 
 def confirm_inventory_for_booking(db, *, booking: models.Booking) -> None:

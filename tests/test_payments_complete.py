@@ -417,9 +417,10 @@ class TestCreatePaymentIntent:
         booking_r = quick_booking(client, room_id)
         booking_id = booking_r["id"]
 
-        import stripe
-        stripe_err = stripe.error.StripeError("Card declined")
-        stripe_err.user_message = "Card declined"
+        class DummyStripeError(Exception):
+            user_message = "Card declined"
+
+        stripe_err = DummyStripeError()
 
         with patch("routers.payments.stripe.PaymentIntent.create", side_effect=stripe_err):
             r = client.post(
@@ -622,11 +623,12 @@ class TestGetTransaction:
         txns = client.get("/payments/transactions", headers=headers)
         txn_id = txns.json()["transactions"][0]["id"]
 
-        r = client.get(f"/payments/transactions/{txn_id}")
+        r = client.get(f"/payments/transactions/{txn_id}", headers=headers)
         assert r.status_code == 200
 
-    def test_get_transaction_not_found(self, client):
-        r = client.get("/payments/transactions/999999")
+    def test_get_transaction_not_found(self, client, db_session):
+        headers = admin_headers(client, db_session)
+        r = client.get("/payments/transactions/999999", headers=headers)
         assert r.status_code == 404
 
 
@@ -634,12 +636,9 @@ class TestGetTransaction:
 
 
 class TestListTransactions:
-    def test_list_public_access(self, client):
-        # GET /payments/transactions is intentionally public so that the
-        # PayFlow frontend (which has no login system) can display transaction
-        # history without needing admin credentials.
+    def test_list_requires_admin(self, client):
         r = client.get("/payments/transactions")
-        assert r.status_code == 200
+        assert r.status_code == 401
 
     def test_list_returns_all(self, client, db_session, room_id):
         headers = admin_headers(client, db_session)

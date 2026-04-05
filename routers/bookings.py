@@ -10,10 +10,9 @@ from sqlalchemy.orm import Session, joinedload
 import models
 import schemas
 from database import get_db
-from routers.auth import get_current_admin
+from routers.auth import get_current_admin, normalize_email
 from services.audit_service import write_audit_log
 from services.inventory_service import (
-    is_inventory_available,
     lock_inventory_for_booking,
     release_expired_inventory_locks,
     release_inventory_for_booking,
@@ -161,6 +160,7 @@ def create_booking(booking_data: schemas.BookingCreate, db: Session = Depends(ge
     if nights < 1:
         raise HTTPException(status_code=400, detail="Minimum stay is 1 night")
 
+    normalized_email = normalize_email(booking_data.email)
     release_expired_holds(db, room_id=booking_data.room_id)
     release_expired_inventory_locks(db, room_id=booking_data.room_id)
     if has_active_booking_overlap(db, booking_data.room_id, check_in, check_out):
@@ -168,20 +168,19 @@ def create_booking(booking_data: schemas.BookingCreate, db: Session = Depends(ge
             status_code=409,
             detail="Room is already reserved for the selected dates",
         )
-    if not is_inventory_available(
-        db, room_id=booking_data.room_id, check_in=check_in, check_out=check_out
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="Inventory is not available for the selected dates",
-        )
 
     room_rate, taxes, service_fee, total = calculate_booking_amount(room, nights)
+    linked_user = (
+        db.query(models.User)
+        .filter(models.User.email == normalized_email, models.User.is_active == True)
+        .first()
+    )
 
     db_booking = models.Booking(
         booking_ref=generate_booking_ref(),
         user_name=booking_data.user_name,
-        email=booking_data.email,
+        email=normalized_email,
+        user_id=linked_user.id if linked_user else None,
         phone=booking_data.phone,
         room_id=booking_data.room_id,
         check_in=check_in,
@@ -227,7 +226,7 @@ def get_bookings(
     query = db.query(models.Booking).options(joinedload(models.Booking.room))
 
     if email:
-        query = query.filter(models.Booking.email == email)
+        query = query.filter(models.Booking.email == normalize_email(email))
     if status:
         query = query.filter(models.Booking.status == status)
 
@@ -248,10 +247,17 @@ def get_booking_history(
     db: Session = Depends(get_db),
 ):
     release_expired_holds(db)
+    normalized_email = normalize_email(email)
+    user = db.query(models.User).filter(models.User.email == normalized_email).first()
     bookings = (
         db.query(models.Booking)
         .options(joinedload(models.Booking.room))
-        .filter(models.Booking.email == email)
+        .filter(
+            or_(
+                models.Booking.email == normalized_email,
+                models.Booking.user_id == (user.id if user else -1),
+            )
+        )
         .order_by(models.Booking.created_at.desc())
         .all()
     )
@@ -276,7 +282,7 @@ def get_resumable_booking(
         .options(joinedload(models.Booking.room))
         .filter(
             models.Booking.room_id == room_id,
-            models.Booking.email == email,
+            models.Booking.email == normalize_email(email),
             models.Booking.check_in == check_in,
             models.Booking.check_out == check_out,
             models.Booking.status == models.BookingStatus.PENDING,

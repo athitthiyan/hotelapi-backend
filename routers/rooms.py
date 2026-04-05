@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import case, func
+from sqlalchemy import case, func, or_
 from typing import Optional
 from datetime import date, datetime, timedelta, timezone
 import models, schemas
@@ -8,7 +8,6 @@ from database import get_db
 from routers.auth import get_current_admin
 from services.audit_service import write_audit_log
 from services.inventory_service import (
-    is_inventory_available,
     iter_stay_dates,
     release_expired_inventory_locks,
     upsert_inventory_range,
@@ -94,18 +93,25 @@ def get_rooms(
         for amenity in [item.strip() for item in amenities.split(",") if item.strip()]:
             room_query = room_query.filter(models.Room.amenities.ilike(f"%{amenity}%"))
 
-    rooms = room_query.all()
     if check_in and check_out:
         check_in_dt = datetime.fromisoformat(check_in)
         check_out_dt = datetime.fromisoformat(check_out)
-        rooms = [
-            room
-            for room in rooms
-            if is_inventory_available(
-                db, room_id=room.id, check_in=check_in_dt, check_out=check_out_dt
+        release_expired_inventory_locks(db)
+        room_query = room_query.filter(
+            ~db.query(models.RoomInventory.id)
+            .filter(
+                models.RoomInventory.room_id == models.Room.id,
+                models.RoomInventory.inventory_date >= check_in_dt.date(),
+                models.RoomInventory.inventory_date < check_out_dt.date(),
+                or_(
+                    models.RoomInventory.status == models.InventoryStatus.BLOCKED,
+                    models.RoomInventory.available_units <= 0,
+                ),
             )
-        ]
+            .exists()
+        )
 
+    rooms = room_query.all()
     rooms = sort_rooms(rooms, sort_by)
     total = len(rooms)
     paginated_rooms = rooms[(page - 1) * per_page : page * per_page]

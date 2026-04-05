@@ -11,6 +11,11 @@ import models
 from database import Base, SessionLocal, engine, settings, validate_runtime_configuration
 from routers import analytics, auth, bookings, notifications, ops, partner, payments, reviews, rooms, wishlist
 
+try:
+    from apscheduler.schedulers.background import BackgroundScheduler
+except ImportError:  # pragma: no cover - guarded for environments without optional dependency
+    BackgroundScheduler = None
+
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
@@ -20,6 +25,14 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+
+def run_expired_hold_release(session_factory=SessionLocal) -> int:
+    db = session_factory()
+    try:
+        return bookings.release_expired_holds(db)
+    finally:
+        db.close()
 
 
 @app.on_event("startup")
@@ -48,6 +61,22 @@ def startup_checks():
         logger.info("Database connection established.")
     except (SQLAlchemyError, RuntimeError) as exc:
         logger.exception("Database initialization failed during startup: %s", exc)
+
+    if BackgroundScheduler is None:
+        logger.warning("APScheduler is not installed; expired-hold scheduler is disabled.")
+        return
+
+    scheduler = BackgroundScheduler(timezone="UTC")
+    scheduler.add_job(run_expired_hold_release, "interval", minutes=2, id="release-expired-holds", replace_existing=True)
+    scheduler.start()
+    app.state.hold_expiry_scheduler = scheduler
+
+
+@app.on_event("shutdown")
+def shutdown_scheduler():
+    scheduler = getattr(app.state, "hold_expiry_scheduler", None)
+    if scheduler:
+        scheduler.shutdown(wait=False)
 
 
 # Always-allowed production origins (code-level guarantee, not reliant on env var)

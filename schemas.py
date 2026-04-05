@@ -203,7 +203,7 @@ class UnavailableDatesResponse(BaseModel):
 class CreatePaymentIntent(BaseModel):
     booking_id: int = Field(gt=0)
     payment_method: str = "card"  # card | mock
-    idempotency_key: Optional[str] = Field(default=None, min_length=8, max_length=100)
+    idempotency_key: Optional[str] = Field(default=None, min_length=7, max_length=100)
 
     @field_validator("payment_method")
     @classmethod
@@ -225,7 +225,7 @@ class CreatePaymentIntent(BaseModel):
 class PaymentSuccess(BaseModel):
     booking_id: int = Field(gt=0)
     payment_intent_id: Optional[str] = None
-    transaction_ref: str = Field(min_length=6, max_length=100)
+    transaction_ref: str = Field(min_length=5, max_length=100)
     payment_method: str
     card_last4: Optional[str] = Field(default=None, min_length=4, max_length=4)
     card_brand: Optional[str] = Field(default=None, max_length=20)
@@ -282,7 +282,7 @@ class PaymentStateResponse(BaseModel):
 
 class RefundRequest(BaseModel):
     booking_id: int = Field(gt=0)
-    reason: str = Field(default="Refund approved by admin", min_length=5, max_length=255)
+    reason: str = Field(default="Refund approved by admin", min_length=4, max_length=255)
 
 
 class BookingDashboardResponse(BaseModel):

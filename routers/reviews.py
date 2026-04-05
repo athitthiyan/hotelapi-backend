@@ -64,22 +64,32 @@ def get_room_reviews(
     if not room:
         raise HTTPException(status_code=404, detail="Room not found")
 
-    all_reviews = (
+    total = (
+        db.query(func.count(models.Review.id))
+        .filter(models.Review.room_id == room_id)
+        .scalar()
+        or 0
+    )
+    reviews = (
         db.query(models.Review)
         .options(joinedload(models.Review.user))
         .filter(models.Review.room_id == room_id)
         .order_by(models.Review.created_at.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
         .all()
     )
-    total = len(all_reviews)
-    start = (page - 1) * per_page
-    paginated = all_reviews[start : start + per_page]
+    all_reviews = (
+        db.query(models.Review)
+        .filter(models.Review.room_id == room_id)
+        .all()
+    )
 
     avg_rating = round(sum(r.rating for r in all_reviews) / total, 2) if total else 0.0
     breakdown = _build_rating_breakdown(all_reviews)
 
     return schemas.ReviewListResponse(
-        reviews=[_review_to_response(r) for r in paginated],
+        reviews=[_review_to_response(r) for r in reviews],
         total=total,
         average_rating=avg_rating,
         rating_breakdown=breakdown,
@@ -136,6 +146,7 @@ def create_review(
         is_verified=True,
     )
     db.add(review)
+    db.flush()
 
     # Update denormalised room rating
     _refresh_room_rating(db, payload.room_id, review)
@@ -180,11 +191,14 @@ def delete_review(
         raise HTTPException(status_code=404, detail="Review not found")
     if review.user_id != current_user.id and not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Not authorised to delete this review")
+    room_id = review.room_id
     db.delete(review)
+    db.flush()
+    _refresh_room_rating(db, room_id)
     db.commit()
 
 
-def _refresh_room_rating(db: Session, room_id: int, new_review: models.Review) -> None:
+def _refresh_room_rating(db: Session, room_id: int, new_review: models.Review | None = None) -> None:
     """Recompute and persist the denormalised rating on the Room row."""
     agg = (
         db.query(func.avg(models.Review.rating), func.count(models.Review.id))
@@ -192,8 +206,12 @@ def _refresh_room_rating(db: Session, room_id: int, new_review: models.Review) -
         .one()
     )
     avg_rating, count = agg
-    if avg_rating is not None:
-        room = db.query(models.Room).filter(models.Room.id == room_id).first()
-        if room:
-            room.rating = round(float(avg_rating), 2)
-            room.review_count = int(count) + 1
+    room = db.query(models.Room).filter(models.Room.id == room_id).first()
+    if not room:
+        return
+    if avg_rating is None:
+        room.rating = 0.0
+        room.review_count = 0
+        return
+    room.rating = round(float(avg_rating), 2)
+    room.review_count = int(count)

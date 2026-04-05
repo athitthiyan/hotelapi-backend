@@ -131,14 +131,7 @@ def test_mock_payment_marks_booking_paid_immediately(client, create_booking, db_
     assert booking_row.status == models.BookingStatus.CONFIRMED
 
 
-def test_card_payment_confirms_immediately_via_payment_success(client, create_booking, db_session):
-    """
-    After the client side confirms a card payment (Stripe.js), it calls
-    POST /payments/payment-success which now immediately marks the booking as
-    CONFIRMED/PAID for all payment methods (mock and card).  The transaction
-    status should be "success" and the booking states should be updated at once
-    without waiting for a Stripe webhook.
-    """
+def test_card_payment_success_marks_booking_processing_until_webhook(client, create_booking, db_session):
     booking = create_booking()
 
     with patch(
@@ -161,10 +154,9 @@ def test_card_payment_confirms_immediately_via_payment_success(client, create_bo
     db_session.refresh(booking_row)
     assert intent.status_code == 200
     assert ack.status_code == 200
-    # payment-success now confirms immediately for card payments too
-    assert ack.json()["status"] == "success"
-    assert booking_row.payment_status == models.PaymentStatus.PAID
-    assert booking_row.status == models.BookingStatus.CONFIRMED
+    assert ack.json()["status"] == "processing"
+    assert booking_row.payment_status == models.PaymentStatus.PROCESSING
+    assert booking_row.status == models.BookingStatus.PROCESSING
 
 
 def test_webhook_success_is_idempotent_and_finalizes_processing_payment(client, create_booking, db_session):

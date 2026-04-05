@@ -1,6 +1,7 @@
 """Exhaustive tests for reviews and wishlist routers."""
 import os
 import sys
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -98,7 +99,7 @@ def _create_confirmed_booking(app, room_id: int, email: str) -> int:
     db = app.state.testing_session_local()
     now = datetime.now(timezone.utc)
     booking = models.Booking(
-        booking_ref="TESTREF001",
+        booking_ref=f"TESTREF{uuid.uuid4().hex[:6].upper()}",
         user_name="Test User",
         email=email,
         room_id=room_id,
@@ -170,9 +171,14 @@ class TestCreateReview:
         )
         assert r.status_code == 201
         body = r.json()
+        db = app.state.testing_session_local()
+        room = db.query(models.Room).filter(models.Room.id == room_id).first()
+        db.close()
         assert body["rating"] == 5
         assert body["is_verified"] is True
         assert body["reviewer_name"] == "Test User"
+        assert room.review_count == 1
+        assert room.rating == 5.0
 
     def test_create_review_requires_auth(self, client, app):
         room_id = _create_room(app)
@@ -220,6 +226,34 @@ class TestCreateReview:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert r.status_code == 422
+
+    def test_multiple_reviews_keep_exact_room_count(self, client, app):
+        room_id = _create_room(app)
+
+        first_email = "count1@test.com"
+        second_email = "count2@test.com"
+        first_token = _register_and_login(client, first_email)
+        second_token = _register_and_login(client, second_email)
+        first_booking = _create_confirmed_booking(app, room_id, first_email)
+        second_booking = _create_confirmed_booking(app, room_id, second_email)
+
+        client.post(
+            "/reviews",
+            json={"room_id": room_id, "booking_id": first_booking, "rating": 5},
+            headers={"Authorization": f"Bearer {first_token}"},
+        )
+        client.post(
+            "/reviews",
+            json={"room_id": room_id, "booking_id": second_booking, "rating": 3},
+            headers={"Authorization": f"Bearer {second_token}"},
+        )
+
+        db = app.state.testing_session_local()
+        room = db.query(models.Room).filter(models.Room.id == room_id).first()
+        db.close()
+
+        assert room.review_count == 2
+        assert room.rating == 4.0
 
 
 class TestHostReply:
@@ -281,7 +315,12 @@ class TestDeleteReview:
             f"/reviews/{review_id}",
             headers={"Authorization": f"Bearer {token}"},
         )
+        db = app.state.testing_session_local()
+        room = db.query(models.Room).filter(models.Room.id == room_id).first()
+        db.close()
         assert del_r.status_code == 204
+        assert room.review_count == 0
+        assert room.rating == 0.0
 
     def test_delete_another_user_review_forbidden(self, client, app):
         email_a = "owner@test.com"
