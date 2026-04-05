@@ -69,6 +69,19 @@ def expire_stale_booking_hold(booking: models.Booking, now: Optional[datetime] =
     return False
 
 
+def has_active_pending_hold(booking: models.Booking, now: Optional[datetime] = None) -> bool:
+    now = now or utc_now()
+    hold_expires_at = booking.hold_expires_at
+    if hold_expires_at is not None:
+        hold_expires_at = normalize_comparison_datetime(hold_expires_at, now)
+    return (
+        booking.status == models.BookingStatus.PENDING
+        and booking.payment_status != models.PaymentStatus.PAID
+        and hold_expires_at is not None
+        and hold_expires_at > now
+    )
+
+
 def release_expired_holds(
     db: Session,
     room_id: Optional[int] = None,
@@ -110,26 +123,23 @@ def has_active_booking_overlap(
         models.Booking.check_in < check_out,
         models.Booking.check_out > check_in,
     )
-    active_booking_filter = or_(
-        models.Booking.status == models.BookingStatus.CONFIRMED,
-        and_(
-            models.Booking.status == models.BookingStatus.PENDING,
-            or_(
-                models.Booking.hold_expires_at.is_(None),
-                models.Booking.hold_expires_at > now,
-            ),
-        ),
-    )
 
     query = db.query(models.Booking).filter(
         models.Booking.room_id == room_id,
         overlap_filter,
-        active_booking_filter,
+        models.Booking.status.in_(
+            [models.BookingStatus.CONFIRMED, models.BookingStatus.PENDING]
+        ),
     )
     if exclude_booking_id is not None:
         query = query.filter(models.Booking.id != exclude_booking_id)
 
-    return query.first() is not None
+    for booking in query.all():
+        if booking.status == models.BookingStatus.CONFIRMED:
+            return True
+        if has_active_pending_hold(booking, now=now):
+            return True
+    return False
 
 
 def get_booking_or_404(db: Session, booking_id: int) -> models.Booking:
@@ -166,6 +176,13 @@ def create_booking(booking_data: schemas.BookingCreate, db: Session = Depends(ge
 
     check_in = booking_data.check_in
     check_out = booking_data.check_out
+
+    # SQLite returns naive datetimes; normalise to UTC-aware so all comparisons work
+    if check_in.tzinfo is None:
+        check_in = check_in.replace(tzinfo=timezone.utc)
+    if check_out.tzinfo is None:
+        check_out = check_out.replace(tzinfo=timezone.utc)
+
     if check_out <= check_in:
         raise booking_error(
             status_code=400,
@@ -207,7 +224,7 @@ def create_booking(booking_data: schemas.BookingCreate, db: Session = Depends(ge
     release_expired_inventory_locks(db, room_id=booking_data.room_id)
 
     # Check for duplicate active hold (same room + overlapping dates + non-expired hold)
-    existing_hold = (
+    existing_holds = (
         db.query(models.Booking)
         .filter(
             models.Booking.room_id == booking_data.room_id,
@@ -216,11 +233,10 @@ def create_booking(booking_data: schemas.BookingCreate, db: Session = Depends(ge
             models.Booking.status == models.BookingStatus.PENDING,
             models.Booking.payment_status != models.PaymentStatus.PAID,
             models.Booking.hold_expires_at.is_not(None),
-            models.Booking.hold_expires_at > now,
         )
-        .first()
+        .all()
     )
-    if existing_hold:
+    if any(has_active_pending_hold(booking, now=now) for booking in existing_holds):
         raise booking_error(
             status_code=409,
             code=error_codes.HOLD_EXISTS,
