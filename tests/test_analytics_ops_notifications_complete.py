@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -87,7 +88,7 @@ def create_booking(
     check_in = utc_now() + timedelta(days=30)
     check_out = check_in + timedelta(days=2)
     b = models.Booking(
-        booking_ref=f"REF-{datetime.utcnow().timestamp()}",
+        booking_ref=f"REF-{uuid4().hex}",
         user_name=user_name,
         email=email,
         room_id=room_id,
@@ -117,13 +118,13 @@ def create_transaction(
 ):
     txn = models.Transaction(
         booking_id=booking_id,
-        transaction_ref=f"TXN-{datetime.utcnow().timestamp()}",
-        stripe_payment_intent_id=f"pi_{datetime.utcnow().timestamp()}",
+        transaction_ref=f"TXN-{uuid4().hex}",
+        stripe_payment_intent_id=f"pi_{uuid4().hex}",
         amount=amount,
         currency="usd",
         payment_method="card",
         status=status,
-        idempotency_key=f"ik_{datetime.utcnow().timestamp()}",
+        idempotency_key=f"ik_{uuid4().hex}",
     )
     db_session.add(txn)
     db_session.commit()

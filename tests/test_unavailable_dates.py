@@ -67,7 +67,7 @@ def test_invalid_date_range_returns_400(client, room_id):
     assert response.status_code == 400
 
 
-def test_active_hold_appears_in_held_dates(client, db_session, room_id):
+def test_active_hold_appears_in_held_dates(client, room_id):
     """A PENDING booking with a non-expired hold should produce held_dates."""
     now = datetime.now(timezone.utc)
     check_in = now + timedelta(hours=2)
@@ -156,7 +156,7 @@ def test_expired_hold_not_in_held_dates(client, db_session, room_id):
     assert _date_str(check_in) not in body["unavailable_dates"]
 
 
-def test_date_range_filter_excludes_out_of_range_booking(client, db_session, room_id):
+def test_date_range_filter_excludes_out_of_range_booking(client, room_id, db_session):
     """A booking completely outside the query window should not appear."""
     now = datetime.now(timezone.utc)
     far_check_in = now + timedelta(days=60)
@@ -181,6 +181,44 @@ def test_date_range_filter_excludes_out_of_range_booking(client, db_session, roo
     body = response.json()
     assert body["unavailable_dates"] == []
     assert body["held_dates"] == []
+
+
+def test_confirmed_booking_with_naive_datetimes_is_supported(client, db_session, room_id):
+    """Naive confirmed booking timestamps should not crash unavailable-dates lookup."""
+    check_in = datetime(2026, 4, 10, 15, 0, 0)
+    check_out = datetime(2026, 4, 12, 11, 0, 0)
+
+    booking = models.Booking(
+        booking_ref="NAIVE-DATE-TEST",
+        user_name="Naive Booker",
+        email="naive@example.com",
+        room_id=room_id,
+        check_in=check_in,
+        check_out=check_out,
+        guests=2,
+        nights=2,
+        room_rate=350.0,
+        taxes=30.0,
+        service_fee=20.0,
+        total_amount=400.0,
+        status=models.BookingStatus.CONFIRMED,
+        payment_status=models.PaymentStatus.PAID,
+    )
+    db_session.add(booking)
+    db_session.commit()
+
+    response = client.get(
+        f"/rooms/{room_id}/unavailable-dates",
+        params={
+            "from_date": "2026-04-09",
+            "to_date": "2026-04-12",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "2026-04-10" in body["unavailable_dates"]
+    assert "2026-04-11" in body["unavailable_dates"]
 
 
 def test_default_window_covers_180_days(client, room_id):

@@ -26,6 +26,17 @@ from services.search_service import (
 router = APIRouter(prefix="/rooms", tags=["Rooms"])
 
 
+def booking_overlaps_date_window(
+    booking: models.Booking,
+    *,
+    from_date: date,
+    to_date: date,
+) -> bool:
+    booking_start = booking.check_in.date()
+    booking_end = booking.check_out.date()
+    return booking_start <= to_date and booking_end > from_date
+
+
 @router.get("", response_model=schemas.RoomListResponse)
 def get_rooms(
     query: Optional[str] = Query(None),
@@ -251,20 +262,21 @@ def get_room_unavailable_dates(
     #     (these might not have inventory rows if inventory was never
     #     initialised for those dates)
     # -----------------------------------------------------------------
-    from_dt = datetime.combine(from_date, datetime.min.time()).replace(tzinfo=timezone.utc)
-    to_dt = datetime.combine(to_date, datetime.max.time()).replace(tzinfo=timezone.utc)
-
     confirmed_bookings = (
         db.query(models.Booking)
         .filter(
             models.Booking.room_id == room_id,
             models.Booking.status == models.BookingStatus.CONFIRMED,
-            models.Booking.check_in < to_dt,
-            models.Booking.check_out > from_dt,
         )
         .all()
     )
     for booking in confirmed_bookings:
+        if not booking_overlaps_date_window(
+            booking,
+            from_date=from_date,
+            to_date=to_date,
+        ):
+            continue
         for stay_date in iter_stay_dates(booking.check_in, booking.check_out):
             if from_date <= stay_date <= to_date:
                 unavailable_dates.add(stay_date.isoformat())

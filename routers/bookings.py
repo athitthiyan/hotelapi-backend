@@ -365,21 +365,30 @@ def get_resumable_booking(
     has not yet expired — allows the frontend to reuse the booking ID for retry payment."""
     release_expired_holds(db, room_id=room_id)
     now = utc_now()
-    booking = (
+    candidate_bookings = (
         db.query(models.Booking)
         .options(joinedload(models.Booking.room))
         .filter(
             models.Booking.room_id == room_id,
             models.Booking.email == normalize_email(email),
-            models.Booking.check_in == check_in,
-            models.Booking.check_out == check_out,
             models.Booking.status == models.BookingStatus.PENDING,
             models.Booking.payment_status != models.PaymentStatus.PAID,
             models.Booking.hold_expires_at.is_not(None),
-            models.Booking.hold_expires_at > now,
         )
         .order_by(models.Booking.created_at.desc())
-        .first()
+        .all()
+    )
+    normalized_check_in = normalize_comparison_datetime(check_in, now)
+    normalized_check_out = normalize_comparison_datetime(check_out, now)
+    booking = next(
+        (
+            candidate
+            for candidate in candidate_bookings
+            if normalize_comparison_datetime(candidate.check_in, normalized_check_in) == normalized_check_in
+            and normalize_comparison_datetime(candidate.check_out, normalized_check_out) == normalized_check_out
+            and has_active_pending_hold(candidate, now=now)
+        ),
+        None,
     )
     if not booking:
         raise HTTPException(status_code=404, detail="No resumable booking found")
