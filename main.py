@@ -9,7 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 import models
 from database import Base, SessionLocal, engine, settings, validate_runtime_configuration
-from routers import analytics, auth, bookings, notifications, ops, payments, reviews, rooms, wishlist
+from routers import analytics, auth, bookings, notifications, ops, partner, payments, reviews, rooms, wishlist
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,7 @@ _HARDCODED_ORIGINS = [
     "https://stayease-booking-app-git-main-athitthiyans-projects.vercel.app",
     "https://payflow-payment-app.vercel.app",
     "https://insightboard-admin.vercel.app",
+    "https://partner-portal.vercel.app",
 ]
 _env_origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
 origins = list(set(_env_origins + _HARDCODED_ORIGINS))
@@ -75,6 +76,7 @@ app.include_router(bookings.router)
 app.include_router(payments.router)
 app.include_router(analytics.router)
 app.include_router(auth.router)
+app.include_router(partner.router)
 app.include_router(notifications.router)
 app.include_router(ops.router)
 app.include_router(reviews.router)

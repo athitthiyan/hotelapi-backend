@@ -33,6 +33,7 @@ def create_token(user: models.User, token_type: str, expires_delta: timedelta) -
         "sub": str(user.id),
         "email": user.email,
         "is_admin": user.is_admin,
+        "is_partner": user.is_partner,
         "token_type": token_type,
         "exp": utc_now() + expires_delta,
     }
@@ -114,6 +115,15 @@ def get_current_admin(user: models.User = Depends(get_current_user)) -> models.U
     return user
 
 
+def get_current_partner(user: models.User = Depends(get_current_user)) -> models.User:
+    if not user.is_partner:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Partner access required",
+        )
+    return user
+
+
 @router.post("/signup", response_model=schemas.TokenResponse, status_code=201)
 def signup(payload: schemas.UserSignup, request: Request, db: Session = Depends(get_db)):
     enforce_rate_limit("auth:signup", request, subject=payload.email.lower())
@@ -126,6 +136,7 @@ def signup(payload: schemas.UserSignup, request: Request, db: Session = Depends(
         full_name=payload.full_name,
         hashed_password=hash_password(payload.password),
         is_admin=False,
+        is_partner=False,
         is_active=True,
     )
     db.add(user)
@@ -309,6 +320,7 @@ async def social_login(
                 avatar_url=avatar_url,
                 hashed_password=None,
                 is_admin=False,
+                is_partner=False,
                 is_active=True,
             )
             db.add(user)

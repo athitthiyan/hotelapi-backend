@@ -78,18 +78,57 @@ class User(Base):
     avatar_url = Column(String(500))
     google_id = Column(String(128), unique=True, index=True)
     is_admin = Column(Boolean, default=False, nullable=False)
+    is_partner = Column(Boolean, default=False, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     reviews = relationship("Review", back_populates="user")
     wishlists = relationship("Wishlist", back_populates="user")
+    partner_hotels = relationship("PartnerHotel", back_populates="owner")
+
+
+class PartnerHotel(Base):
+    __tablename__ = "partner_hotels"
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True, index=True)
+    legal_name = Column(String(200), nullable=False)
+    display_name = Column(String(200), nullable=False)
+    gst_number = Column(String(30))
+    support_email = Column(String(200), nullable=False)
+    support_phone = Column(String(30))
+    address_line = Column(String(255), nullable=False)
+    city = Column(String(100), nullable=False)
+    state = Column(String(100))
+    country = Column(String(100), default="India", nullable=False)
+    postal_code = Column(String(20))
+    description = Column(Text)
+    check_in_time = Column(String(20), default="14:00")
+    check_out_time = Column(String(20), default="11:00")
+    cancellation_window_hours = Column(Integer, default=24, nullable=False)
+    instant_confirmation_enabled = Column(Boolean, default=True, nullable=False)
+    free_cancellation_enabled = Column(Boolean, default=True, nullable=False)
+    verified_badge = Column(Boolean, default=False, nullable=False)
+    bank_account_name = Column(String(150))
+    bank_account_number_masked = Column(String(32))
+    bank_ifsc = Column(String(20))
+    bank_upi_id = Column(String(120))
+    payout_cycle = Column(String(30), default="weekly", nullable=False)
+    payout_currency = Column(String(10), default="INR", nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    owner = relationship("User", back_populates="partner_hotels")
+    rooms = relationship("Room", back_populates="partner_hotel")
+    payouts = relationship("PartnerPayout", back_populates="hotel")
 
 
 class Room(Base):
     __tablename__ = "rooms"
 
     id = Column(Integer, primary_key=True, index=True)
+    partner_hotel_id = Column(Integer, ForeignKey("partner_hotels.id"), index=True)
     hotel_name = Column(String(200), nullable=False)
     room_type = Column(
         Enum(
@@ -120,6 +159,7 @@ class Room(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
+    partner_hotel = relationship("PartnerHotel", back_populates="rooms")
     bookings = relationship("Booking", back_populates="room")
     reviews = relationship("Review", back_populates="room")
     wishlists = relationship("Wishlist", back_populates="room")
@@ -257,6 +297,26 @@ class AuditLog(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     actor = relationship("User")
+
+
+class PartnerPayout(Base):
+    __tablename__ = "partner_payouts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    hotel_id = Column(Integer, ForeignKey("partner_hotels.id"), nullable=False, index=True)
+    booking_id = Column(Integer, ForeignKey("bookings.id"), index=True)
+    gross_amount = Column(Float, nullable=False, default=0.0)
+    commission_amount = Column(Float, nullable=False, default=0.0)
+    net_amount = Column(Float, nullable=False, default=0.0)
+    currency = Column(String(10), default="INR", nullable=False)
+    status = Column(String(30), default="pending", nullable=False, index=True)
+    payout_reference = Column(String(100), unique=True, index=True)
+    payout_date = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    hotel = relationship("PartnerHotel", back_populates="payouts")
+    booking = relationship("Booking")
 
 
 class Review(Base):

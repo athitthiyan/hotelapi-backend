@@ -366,6 +366,7 @@ class UserResponse(BaseModel):
     email: EmailStr
     full_name: str
     is_admin: bool
+    is_partner: bool
     is_active: bool
 
     class Config:
@@ -377,6 +378,231 @@ class TokenResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     user: UserResponse
+
+
+class PartnerRegisterRequest(BaseModel):
+    email: EmailStr
+    full_name: str = Field(min_length=2, max_length=100)
+    password: str = Field(min_length=10, max_length=128)
+    legal_name: str = Field(min_length=2, max_length=200)
+    display_name: str = Field(min_length=2, max_length=200)
+    support_email: EmailStr
+    support_phone: str = Field(min_length=7, max_length=30)
+    address_line: str = Field(min_length=5, max_length=255)
+    city: str = Field(min_length=2, max_length=100)
+    state: Optional[str] = Field(default=None, max_length=100)
+    country: str = Field(default="India", min_length=2, max_length=100)
+    postal_code: Optional[str] = Field(default=None, max_length=20)
+    gst_number: Optional[str] = Field(default=None, max_length=30)
+    bank_account_name: Optional[str] = Field(default=None, max_length=150)
+    bank_account_number: Optional[str] = Field(default=None, min_length=6, max_length=24)
+    bank_ifsc: Optional[str] = Field(default=None, max_length=20)
+    bank_upi_id: Optional[str] = Field(default=None, max_length=120)
+
+    @field_validator("password")
+    @classmethod
+    def validate_partner_password_strength(cls, value: str) -> str:
+        has_upper = any(char.isupper() for char in value)
+        has_lower = any(char.islower() for char in value)
+        has_digit = any(char.isdigit() for char in value)
+        if not (has_upper and has_lower and has_digit):
+            raise ValueError(
+                "Password must include uppercase, lowercase, and numeric characters"
+            )
+        return value
+
+
+class PartnerLoginRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=128)
+
+
+class PartnerHotelBase(BaseModel):
+    legal_name: str
+    display_name: str
+    gst_number: Optional[str] = None
+    support_email: EmailStr
+    support_phone: Optional[str] = None
+    address_line: str
+    city: str
+    state: Optional[str] = None
+    country: str = "India"
+    postal_code: Optional[str] = None
+    description: Optional[str] = None
+    check_in_time: str = "14:00"
+    check_out_time: str = "11:00"
+    cancellation_window_hours: int = 24
+    instant_confirmation_enabled: bool = True
+    free_cancellation_enabled: bool = True
+    verified_badge: bool = False
+    bank_account_name: Optional[str] = None
+    bank_account_number_masked: Optional[str] = None
+    bank_ifsc: Optional[str] = None
+    bank_upi_id: Optional[str] = None
+    payout_cycle: str = "weekly"
+    payout_currency: str = "INR"
+
+
+class PartnerHotelUpdate(BaseModel):
+    legal_name: Optional[str] = None
+    display_name: Optional[str] = None
+    gst_number: Optional[str] = None
+    support_email: Optional[EmailStr] = None
+    support_phone: Optional[str] = None
+    address_line: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    country: Optional[str] = None
+    postal_code: Optional[str] = None
+    description: Optional[str] = None
+    check_in_time: Optional[str] = None
+    check_out_time: Optional[str] = None
+    cancellation_window_hours: Optional[int] = Field(default=None, ge=0, le=720)
+    instant_confirmation_enabled: Optional[bool] = None
+    free_cancellation_enabled: Optional[bool] = None
+    verified_badge: Optional[bool] = None
+    bank_account_name: Optional[str] = None
+    bank_account_number: Optional[str] = Field(default=None, min_length=6, max_length=24)
+    bank_ifsc: Optional[str] = None
+    bank_upi_id: Optional[str] = None
+    payout_cycle: Optional[str] = None
+    payout_currency: Optional[str] = None
+
+
+class PartnerHotelResponse(PartnerHotelBase):
+    id: int
+    owner_user_id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PartnerRoomCreate(BaseModel):
+    room_type: RoomType
+    description: Optional[str] = None
+    price: float = Field(gt=0)
+    original_price: Optional[float] = Field(default=None, gt=0)
+    availability: bool = True
+    image_url: Optional[str] = None
+    gallery_urls: List[str] = Field(default_factory=list)
+    amenities: List[str] = Field(default_factory=list)
+    location: Optional[str] = None
+    city: Optional[str] = None
+    country: Optional[str] = "India"
+    max_guests: int = Field(default=2, ge=1, le=12)
+    beds: int = Field(default=1, ge=1, le=12)
+    bathrooms: int = Field(default=1, ge=1, le=12)
+    size_sqft: Optional[int] = Field(default=None, ge=0)
+    floor: Optional[int] = Field(default=None, ge=0)
+
+
+class PartnerRoomUpdate(BaseModel):
+    room_type: Optional[RoomType] = None
+    description: Optional[str] = None
+    price: Optional[float] = Field(default=None, gt=0)
+    original_price: Optional[float] = Field(default=None, gt=0)
+    availability: Optional[bool] = None
+    image_url: Optional[str] = None
+    gallery_urls: Optional[List[str]] = None
+    amenities: Optional[List[str]] = None
+    location: Optional[str] = None
+    city: Optional[str] = None
+    country: Optional[str] = None
+    max_guests: Optional[int] = Field(default=None, ge=1, le=12)
+    beds: Optional[int] = Field(default=None, ge=1, le=12)
+    bathrooms: Optional[int] = Field(default=None, ge=1, le=12)
+    size_sqft: Optional[int] = Field(default=None, ge=0)
+    floor: Optional[int] = Field(default=None, ge=0)
+
+
+class PartnerRoomResponse(BaseModel):
+    id: int
+    partner_hotel_id: Optional[int] = None
+    hotel_name: str
+    room_type: RoomType
+    description: Optional[str] = None
+    price: float
+    original_price: Optional[float] = None
+    availability: bool
+    image_url: Optional[str] = None
+    gallery_urls: List[str] = Field(default_factory=list)
+    amenities: List[str] = Field(default_factory=list)
+    city: Optional[str] = None
+    country: Optional[str] = None
+    max_guests: int
+    beds: int
+    bathrooms: int
+    size_sqft: Optional[int] = None
+    floor: Optional[int] = None
+    created_at: datetime
+
+
+class PartnerRoomListResponse(BaseModel):
+    rooms: List[PartnerRoomResponse]
+    total: int
+
+
+class PartnerRevenueSummary(BaseModel):
+    total_bookings: int
+    confirmed_bookings: int
+    cancelled_bookings: int
+    gross_revenue: float
+    commission_amount: float
+    net_revenue: float
+    pending_payouts: float
+    paid_out: float
+    default_commission_rate: float = 0.15
+
+
+class PartnerPayoutResponse(BaseModel):
+    id: int
+    hotel_id: int
+    booking_id: Optional[int] = None
+    gross_amount: float
+    commission_amount: float
+    net_amount: float
+    currency: str
+    status: str
+    payout_reference: Optional[str] = None
+    payout_date: Optional[datetime] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PartnerPayoutListResponse(BaseModel):
+    payouts: List[PartnerPayoutResponse]
+    total: int
+
+
+class PartnerCalendarDay(BaseModel):
+    date: str
+    total_units: int
+    available_units: int
+    locked_units: int
+    status: InventoryStatus
+
+
+class PartnerCalendarResponse(BaseModel):
+    room_id: int
+    hotel_id: int
+    days: List[PartnerCalendarDay]
+
+
+class PartnerCalendarUpdateRequest(BaseModel):
+    room_id: int = Field(gt=0)
+    start_date: date
+    end_date: date
+    total_units: int = Field(ge=0, le=1000)
+    available_units: Optional[int] = Field(default=None, ge=0, le=1000)
+    status: InventoryStatus = InventoryStatus.AVAILABLE
+
+
+class PartnerBookingListResponse(BaseModel):
+    bookings: List[BookingResponse]
+    total: int
 
 
 class RefreshTokenRequest(BaseModel):
