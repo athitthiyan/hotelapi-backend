@@ -3,7 +3,7 @@ import string
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import and_, or_, func
 from sqlalchemy.orm import Session, joinedload
 
@@ -12,7 +12,7 @@ import schemas
 import error_codes
 from error_codes import booking_error
 from database import get_db
-from routers.auth import get_current_admin, normalize_email
+from routers.auth import get_current_admin, get_current_user, normalize_email
 from services.inventory_service import (
     lock_inventory_for_booking,
     release_expired_inventory_locks,
@@ -79,6 +79,44 @@ def has_active_pending_hold(booking: models.Booking, now: Optional[datetime] = N
         and booking.payment_status != models.PaymentStatus.PAID
         and hold_expires_at is not None
         and hold_expires_at > now
+    )
+
+
+def has_active_user_hold(booking: models.Booking, now: Optional[datetime] = None) -> bool:
+    now = now or utc_now()
+    hold_expires_at = booking.hold_expires_at
+    if hold_expires_at is not None:
+        hold_expires_at = normalize_comparison_datetime(hold_expires_at, now)
+    return (
+        booking.status in [models.BookingStatus.PENDING, models.BookingStatus.PROCESSING]
+        and booking.payment_status not in [models.PaymentStatus.PAID, models.PaymentStatus.EXPIRED]
+        and hold_expires_at is not None
+        and hold_expires_at > now
+    )
+
+
+def get_latest_active_hold_for_user(
+    db: Session,
+    user: models.User,
+    now: Optional[datetime] = None,
+) -> Optional[models.Booking]:
+    now = now or utc_now()
+    candidate_bookings = (
+        db.query(models.Booking)
+        .options(joinedload(models.Booking.room))
+        .filter(
+            or_(
+                models.Booking.user_id == user.id,
+                models.Booking.email == user.email,
+            ),
+            models.Booking.hold_expires_at.is_not(None),
+        )
+        .order_by(models.Booking.created_at.desc())
+        .all()
+    )
+    return next(
+        (booking for booking in candidate_bookings if has_active_user_hold(booking, now=now)),
+        None,
     )
 
 
@@ -220,8 +258,24 @@ def create_booking(booking_data: schemas.BookingCreate, db: Session = Depends(ge
         )
 
     normalized_email = normalize_email(booking_data.email)
+    linked_user = (
+        db.query(models.User)
+        .filter(models.User.email == normalized_email, models.User.is_active.is_(True))
+        .first()
+    )
     release_expired_holds(db, room_id=booking_data.room_id)
     release_expired_inventory_locks(db, room_id=booking_data.room_id)
+
+    # Logged-in/known users may only have one active booking hold at a time.
+    if linked_user:
+        existing_user_hold = get_latest_active_hold_for_user(db, linked_user, now=now)
+        if existing_user_hold:
+            raise booking_error(
+                status_code=409,
+                code=error_codes.HOLD_EXISTS,
+                message="You already have an active booking hold. Please complete or cancel your existing reservation first.",
+                field="booking_id",
+            )
 
     # Check for duplicate active hold (same room + overlapping dates + non-expired hold)
     existing_holds = (
@@ -253,12 +307,6 @@ def create_booking(booking_data: schemas.BookingCreate, db: Session = Depends(ge
         )
 
     room_rate, taxes, service_fee, total = calculate_booking_amount(room, nights)
-    linked_user = (
-        db.query(models.User)
-        .filter(models.User.email == normalized_email, models.User.is_active.is_(True))
-        .first()
-    )
-
     db_booking = models.Booking(
         booking_ref=generate_booking_ref(),
         user_name=booking_data.user_name,
@@ -351,6 +399,35 @@ def get_booking_history(
     )
 
     return {"bookings": bookings, "total": len(bookings)}
+
+
+@router.get(
+    "/active-hold",
+    response_model=schemas.ActiveHoldResponse,
+    responses={204: {"description": "No active booking hold"}},
+)
+def get_active_hold(
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    release_expired_holds(db)
+    active_hold = get_latest_active_hold_for_user(db, user)
+    if not active_hold or not active_hold.room or not active_hold.hold_expires_at:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    normalized_expiry = normalize_comparison_datetime(active_hold.hold_expires_at, utc_now())
+    remaining_seconds = max(0, int((normalized_expiry - utc_now()).total_seconds()))
+    return {
+        "booking_id": active_hold.id,
+        "room_id": active_hold.room_id,
+        "hotel_name": active_hold.room.hotel_name,
+        "room_name": active_hold.room.room_type.value,
+        "check_in": active_hold.check_in.date(),
+        "check_out": active_hold.check_out.date(),
+        "guests": active_hold.guests,
+        "expires_at": active_hold.hold_expires_at,
+        "remaining_seconds": remaining_seconds,
+    }
 
 
 @router.get("/resumable", response_model=schemas.BookingResponse)
@@ -487,8 +564,7 @@ def get_booking_by_ref(booking_ref: str, db: Session = Depends(get_db)):
     return booking
 
 
-@router.patch("/{booking_id}/cancel", response_model=schemas.BookingResponse)
-def cancel_booking(booking_id: int, db: Session = Depends(get_db)):
+def _cancel_booking(booking_id: int, db: Session) -> models.Booking:
     booking = db.query(models.Booking).filter(models.Booking.id == booking_id).first()
     if not booking:
         raise booking_error(
@@ -531,6 +607,16 @@ def cancel_booking(booking_id: int, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(booking)
     return booking
+
+
+@router.patch("/{booking_id}/cancel", response_model=schemas.BookingResponse)
+def cancel_booking(booking_id: int, db: Session = Depends(get_db)):
+    return _cancel_booking(booking_id, db)
+
+
+@router.post("/{booking_id}/cancel", response_model=schemas.BookingResponse)
+def cancel_booking_post(booking_id: int, db: Session = Depends(get_db)):
+    return _cancel_booking(booking_id, db)
 
 
 @router.get("/admin/dashboard", response_model=schemas.BookingDashboardResponse)

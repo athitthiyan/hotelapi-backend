@@ -36,6 +36,23 @@ def admin_headers(client, db_session):
     return {"Authorization": f"Bearer {login.json()['access_token']}"}
 
 
+def user_headers(client, db_session, email="athit@example.com", password="UserPass123"):
+    user = models.User(
+        email=email,
+        full_name="Auth User",
+        hashed_password=hash_password(password),
+        is_admin=False,
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.commit()
+    login = client.post(
+        "/auth/login",
+        json={"email": email, "password": password},
+    )
+    return {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+
 def test_create_booking_room_not_found(client):
     response = client.post("/bookings", json=booking_payload(999999))
     assert response.status_code == 404
@@ -198,6 +215,29 @@ def test_create_booking_blocks_overlapping_active_reservations(client, create_bo
     assert "active booking hold" in detail["message"]
 
 
+def test_create_booking_blocks_multiple_active_holds_for_same_logged_in_user(client, db_session, room_id):
+    headers = user_headers(client, db_session)
+    client.post("/bookings", json=booking_payload(room_id))
+
+    response = client.post(
+        "/bookings",
+        json=booking_payload(
+            room_id,
+            check_in=(datetime.now(timezone.utc) + timedelta(days=4)).isoformat(),
+            check_out=(datetime.now(timezone.utc) + timedelta(days=6)).isoformat(),
+        ),
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "HOLD_EXISTS"
+    assert "existing reservation" in detail["message"]
+
+    active_hold = client.get("/bookings/active-hold", headers=headers)
+    assert active_hold.status_code == 200
+    assert active_hold.json()["booking_id"] > 0
+
+
 def test_expired_booking_hold_is_released_for_new_reservation(client, create_booking, db_session, room_id):
     first = create_booking()
     booking = db_session.query(models.Booking).filter_by(id=first["id"]).first()
@@ -229,6 +269,64 @@ def test_get_booking_by_ref_expires_stale_holds(client, create_booking, db_sessi
 
     assert response.status_code == 200
     assert response.json()["status"] == "expired"
+
+
+def test_get_active_hold_returns_current_logged_in_hold(client, db_session, room_id):
+    headers = user_headers(client, db_session)
+    created = client.post("/bookings", json=booking_payload(room_id)).json()
+
+    response = client.get("/bookings/active-hold", headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["booking_id"] == created["id"]
+    assert body["room_id"] == room_id
+    assert body["hotel_name"] == "Test Hotel"
+    assert body["room_name"] == "deluxe"
+    assert body["remaining_seconds"] > 0
+
+
+def test_get_active_hold_excludes_expired_and_cancelled_and_confirmed(client, db_session, room_id):
+    headers = user_headers(client, db_session)
+    created = client.post("/bookings", json=booking_payload(room_id)).json()
+    booking = db_session.query(models.Booking).filter_by(id=created["id"]).first()
+
+    booking.hold_expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db_session.commit()
+    expired = client.get("/bookings/active-hold", headers=headers)
+    assert expired.status_code == 204
+
+    booking.hold_expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    booking.status = models.BookingStatus.CANCELLED
+    db_session.commit()
+    cancelled = client.get("/bookings/active-hold", headers=headers)
+    assert cancelled.status_code == 204
+
+    booking.status = models.BookingStatus.CONFIRMED
+    booking.payment_status = models.PaymentStatus.PAID
+    db_session.commit()
+    confirmed = client.get("/bookings/active-hold", headers=headers)
+    assert confirmed.status_code == 204
+
+
+def test_get_active_hold_includes_processing_payment_holds(client, db_session, room_id):
+    headers = user_headers(client, db_session)
+    created = client.post("/bookings", json=booking_payload(room_id)).json()
+    booking = db_session.query(models.Booking).filter_by(id=created["id"]).first()
+    booking.status = models.BookingStatus.PROCESSING
+    booking.payment_status = models.PaymentStatus.PROCESSING
+    booking.hold_expires_at = datetime.now(timezone.utc) + timedelta(minutes=4)
+    db_session.commit()
+
+    response = client.get("/bookings/active-hold", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["booking_id"] == created["id"]
+
+
+def test_get_active_hold_requires_authentication(client):
+    response = client.get("/bookings/active-hold")
+    assert response.status_code == 401
 
 
 def test_cancel_paid_booking_requires_refund_workflow(client, create_booking, db_session):

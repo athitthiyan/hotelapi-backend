@@ -194,6 +194,18 @@ class BookingListResponse(BaseModel):
     total: int
 
 
+class ActiveHoldResponse(BaseModel):
+    booking_id: int
+    room_id: int
+    hotel_name: str
+    room_name: str
+    check_in: date
+    check_out: date
+    guests: int
+    expires_at: datetime
+    remaining_seconds: int
+
+
 class UnavailableDatesResponse(BaseModel):
     """Dates for a specific room that cannot be booked.
 
