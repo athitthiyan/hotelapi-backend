@@ -1,5 +1,6 @@
 import json
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,15 +19,6 @@ except ImportError:  # pragma: no cover - guarded for environments without optio
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(
-    title="HotelAPI - Portfolio Backend",
-    description="Unified backend for StayEase Booking, PayFlow Payment Gateway and InsightBoard Admin",
-    version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-)
-
-
 def run_expired_hold_release(session_factory=SessionLocal) -> int:
     db = session_factory()
     try:
@@ -35,8 +27,7 @@ def run_expired_hold_release(session_factory=SessionLocal) -> int:
         db.close()
 
 
-@app.on_event("startup")
-def startup_checks():
+def startup_checks(state) -> None:
     """Verify database connectivity and schema readiness at startup."""
     try:
         validate_runtime_configuration(settings)
@@ -64,19 +55,38 @@ def startup_checks():
 
     if BackgroundScheduler is None:
         logger.warning("APScheduler is not installed; expired-hold scheduler is disabled.")
+        state.hold_expiry_scheduler = None
         return
 
     scheduler = BackgroundScheduler(timezone="UTC")
     scheduler.add_job(run_expired_hold_release, "interval", minutes=2, id="release-expired-holds", replace_existing=True)
     scheduler.start()
-    app.state.hold_expiry_scheduler = scheduler
+    state.hold_expiry_scheduler = scheduler
 
 
-@app.on_event("shutdown")
-def shutdown_scheduler():
-    scheduler = getattr(app.state, "hold_expiry_scheduler", None)
+def shutdown_scheduler(state) -> None:
+    scheduler = getattr(state, "hold_expiry_scheduler", None)
     if scheduler:
         scheduler.shutdown(wait=False)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    startup_checks(app.state)
+    try:
+        yield
+    finally:
+        shutdown_scheduler(app.state)
+
+
+app = FastAPI(
+    title="HotelAPI - Portfolio Backend",
+    description="Unified backend for StayEase Booking, PayFlow Payment Gateway and InsightBoard Admin",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    lifespan=lifespan,
+)
 
 
 # Always-allowed production origins (code-level guarantee, not reliant on env var)

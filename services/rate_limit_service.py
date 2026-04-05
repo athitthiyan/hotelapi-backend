@@ -7,6 +7,7 @@ from fastapi import HTTPException, Request
 RATE_LIMITS = {
     "auth:signup": (5, timedelta(minutes=10)),
     "auth:login": (8, timedelta(minutes=10)),
+    "auth:forgot-password": (5, timedelta(minutes=15)),
     "partner:register": (5, timedelta(minutes=10)),
     "partner:login": (8, timedelta(minutes=10)),
     "payments:create-intent": (10, timedelta(minutes=10)),

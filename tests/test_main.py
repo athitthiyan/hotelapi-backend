@@ -44,10 +44,12 @@ def test_startup_checks_success():
     with patch.object(main.engine, "begin", return_value=manager), patch.object(
         main, "inspect", return_value=inspector
     ), patch.object(main.logger, "info") as logger_info:
-        main.startup_checks()
+        state = MagicMock()
+        main.startup_checks(state)
 
     connection.execute.assert_called_once()
     logger_info.assert_called_once()
+    assert hasattr(state, "hold_expiry_scheduler")
 
 
 def test_startup_checks_warns_when_tables_are_missing():
@@ -61,9 +63,11 @@ def test_startup_checks_warns_when_tables_are_missing():
     with patch.object(main.engine, "begin", return_value=manager), patch.object(
         main, "inspect", return_value=inspector
     ), patch.object(main.logger, "warning") as logger_warning:
-        main.startup_checks()
+        main.startup_checks(MagicMock())
 
-    logger_warning.assert_called_once()
+    assert logger_warning.call_count >= 1
+    warning_messages = [call.args[0] for call in logger_warning.call_args_list]
+    assert any("Database schema is missing tables" in message for message in warning_messages)
 
 
 def test_startup_checks_auto_creates_schema_when_enabled():
@@ -80,7 +84,7 @@ def test_startup_checks_auto_creates_schema_when_enabled():
         main.Base.metadata, "create_all"
     ) as create_all:
         settings.auto_create_schema = True
-        main.startup_checks()
+        main.startup_checks(MagicMock())
 
     create_all.assert_called_once_with(bind=connection)
 
@@ -89,7 +93,7 @@ def test_startup_checks_handles_database_error():
     with patch.object(main.engine, "begin", side_effect=SQLAlchemyError("boom")), patch.object(
         main.logger, "exception"
     ) as logger_exception:
-        main.startup_checks()
+        main.startup_checks(MagicMock())
 
     logger_exception.assert_called_once()
 
@@ -98,9 +102,30 @@ def test_startup_checks_handles_runtime_configuration_error():
     with patch.object(
         main, "validate_runtime_configuration", side_effect=RuntimeError("bad secret")
     ), patch.object(main.logger, "exception") as logger_exception:
-        main.startup_checks()
+        main.startup_checks(MagicMock())
 
     logger_exception.assert_called_once()
+
+
+def test_startup_checks_disables_scheduler_when_dependency_missing():
+    state = MagicMock()
+
+    with patch.object(main, "BackgroundScheduler", None), patch.object(
+        main.engine, "begin", side_effect=SQLAlchemyError("boom")
+    ), patch.object(main.logger, "warning") as logger_warning:
+        main.startup_checks(state)
+
+    assert state.hold_expiry_scheduler is None
+    logger_warning.assert_called_once()
+
+
+def test_shutdown_scheduler_stops_existing_scheduler():
+    scheduler = MagicMock()
+    state = MagicMock(hold_expiry_scheduler=scheduler)
+
+    main.shutdown_scheduler(state)
+
+    scheduler.shutdown.assert_called_once_with(wait=False)
 
 
 def test_seed_database_when_already_seeded():

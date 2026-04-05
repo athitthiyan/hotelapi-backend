@@ -1,5 +1,5 @@
 import re
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from typing import Optional, List
 from datetime import date, datetime
 from enum import Enum
@@ -109,8 +109,7 @@ class RoomResponse(RoomBase):
     id: int
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class RoomListResponse(BaseModel):
@@ -178,8 +177,7 @@ class BookingResponse(BaseModel):
     special_requests: Optional[str]
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class BookingListResponse(BaseModel):
@@ -263,8 +261,7 @@ class TransactionResponse(BaseModel):
     created_at: datetime
     booking: Optional[BookingResponse] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TransactionListResponse(BaseModel):
@@ -369,8 +366,7 @@ class UserResponse(BaseModel):
     is_partner: bool
     is_active: bool
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TokenResponse(BaseModel):
@@ -474,8 +470,7 @@ class PartnerHotelResponse(PartnerHotelBase):
     owner_user_id: int
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PartnerRoomCreate(BaseModel):
@@ -568,8 +563,7 @@ class PartnerPayoutResponse(BaseModel):
     payout_date: Optional[datetime] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PartnerPayoutListResponse(BaseModel):
@@ -622,8 +616,7 @@ class NotificationOutboxResponse(BaseModel):
     sent_at: Optional[datetime] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class NotificationListResponse(BaseModel):
@@ -661,8 +654,7 @@ class AuditLogResponse(BaseModel):
     metadata_json: Optional[str] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AuditLogListResponse(BaseModel):
@@ -690,8 +682,7 @@ class InventoryResponse(BaseModel):
     locked_by_booking_id: Optional[int] = None
     lock_expires_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class InventoryListResponse(BaseModel):
@@ -727,8 +718,7 @@ class UserDetailResponse(BaseModel):
     is_active: bool
     created_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ─── Auth Extensions ──────────────────────────────────────────────────────────
@@ -738,7 +728,7 @@ class ForgotPasswordRequest(BaseModel):
 
 
 class ResetPasswordRequest(BaseModel):
-    token: str = Field(min_length=32, max_length=256)
+    token: str = Field(min_length=1, max_length=256)
     new_password: str = Field(min_length=10, max_length=128)
 
     @field_validator("new_password")
@@ -816,8 +806,7 @@ class ReviewResponse(BaseModel):
     reviewer_name: str = ""
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ReviewListResponse(BaseModel):
@@ -854,8 +843,7 @@ class WishlistItemResponse(BaseModel):
     room: Optional[RoomResponse] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class WishlistResponse(BaseModel):
