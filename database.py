@@ -72,6 +72,22 @@ class Settings(BaseSettings):
         default="InsightBoard Admin",
         validation_alias=AliasChoices("SEED_ADMIN_NAME", "seed_admin_name"),
     )
+    seed_partner_email: str = Field(
+        default="partner@example.com",
+        validation_alias=AliasChoices("SEED_PARTNER_EMAIL", "seed_partner_email"),
+    )
+    seed_partner_password: str = Field(
+        default="PartnerPass123",
+        validation_alias=AliasChoices("SEED_PARTNER_PASSWORD", "seed_partner_password"),
+    )
+    seed_partner_name: str = Field(
+        default="StayEase Partner Owner",
+        validation_alias=AliasChoices("SEED_PARTNER_NAME", "seed_partner_name"),
+    )
+    seed_partner_hotel_name: str = Field(
+        default="StayEase Marina Suites",
+        validation_alias=AliasChoices("SEED_PARTNER_HOTEL_NAME", "seed_partner_hotel_name"),
+    )
     auto_create_schema: bool = Field(
         default=False,
         validation_alias=AliasChoices("AUTO_CREATE_SCHEMA", "auto_create_schema"),

@@ -328,6 +328,97 @@ def seed_database(db=None):
             db.add(admin_user)
             admin_created = True
 
+        partner_user = db.query(models.User).filter(
+            models.User.email == settings.seed_partner_email
+        ).first()
+        partner_created = False
+        partner_hotel_created = False
+        partner_room_created = False
+        if not partner_user:
+            partner_user = models.User(
+                email=settings.seed_partner_email,
+                full_name=settings.seed_partner_name,
+                hashed_password=auth.hash_password(settings.seed_partner_password),
+                is_admin=False,
+                is_partner=True,
+                is_active=True,
+            )
+            db.add(partner_user)
+            db.flush()
+            partner_created = True
+
+        partner_hotel = db.query(models.PartnerHotel).filter(
+            models.PartnerHotel.owner_user_id == partner_user.id
+        ).first()
+        if not partner_hotel:
+            partner_hotel = models.PartnerHotel(
+                owner_user_id=partner_user.id,
+                legal_name="StayEase Hospitality Private Limited",
+                display_name=settings.seed_partner_hotel_name,
+                gst_number="33ABCDE1234F1Z5",
+                support_email=settings.seed_partner_email,
+                support_phone="+91 98765 43210",
+                address_line="12 Marina Beach Road",
+                city="Chennai",
+                state="Tamil Nadu",
+                country="India",
+                postal_code="600001",
+                description="Partner demo hotel for StayEase onboarding, room operations, and payout testing.",
+                verified_badge=True,
+                instant_confirmation_enabled=True,
+                free_cancellation_enabled=True,
+                bank_account_name=settings.seed_partner_hotel_name,
+                bank_account_number_masked="********9012",
+                bank_ifsc="HDFC0001234",
+                bank_upi_id="stayeasepartner@upi",
+            )
+            db.add(partner_hotel)
+            db.flush()
+            partner_hotel_created = True
+
+        partner_room = db.query(models.Room).filter(
+            models.Room.partner_hotel_id == partner_hotel.id
+        ).first()
+        if not partner_room:
+            partner_room = models.Room(
+                partner_hotel_id=partner_hotel.id,
+                hotel_name=partner_hotel.display_name,
+                room_type=models.RoomType.SUITE,
+                description="Partner seeded room with breakfast, beach access, and GST-ready invoice support.",
+                price=4800.0,
+                original_price=5600.0,
+                availability=True,
+                rating=4.7,
+                review_count=128,
+                image_url="https://images.unsplash.com/photo-1566073771259-6a8506099945?w=800",
+                gallery_urls=json.dumps(
+                    [
+                        "https://images.unsplash.com/photo-1566073771259-6a8506099945?w=800",
+                        "https://images.unsplash.com/photo-1505693416388-ac5ce068fe85?w=800",
+                    ]
+                ),
+                amenities=json.dumps(
+                    [
+                        "Breakfast included",
+                        "Free WiFi",
+                        "Beach access",
+                        "Airport transfer",
+                        "Family friendly",
+                    ]
+                ),
+                location="Near Marina Beach",
+                city="Chennai",
+                country="India",
+                max_guests=3,
+                beds=2,
+                bathrooms=1,
+                size_sqft=420,
+                floor=4,
+                is_featured=True,
+            )
+            db.add(partner_room)
+            partner_room_created = True
+
         db.commit()
 
         return {
@@ -336,6 +427,12 @@ def seed_database(db=None):
             "admin_created": admin_created,
             "admin_email": settings.seed_admin_email,
             "admin_name": settings.seed_admin_name,
+            "partner_created": partner_created,
+            "partner_hotel_created": partner_hotel_created,
+            "partner_room_created": partner_room_created,
+            "partner_email": settings.seed_partner_email,
+            "partner_name": settings.seed_partner_name,
+            "partner_hotel_name": settings.seed_partner_hotel_name,
         }
     finally:
         db.close()

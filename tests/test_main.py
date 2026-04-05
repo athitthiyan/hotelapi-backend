@@ -1,5 +1,4 @@
 from unittest.mock import MagicMock, patch
-import builtins
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -108,12 +107,25 @@ def test_seed_database_when_already_seeded():
     session = MagicMock()
     room_query = MagicMock()
     room_query.count.return_value = 2
-    session.query.return_value = room_query
+    user_query = MagicMock()
+    existing_user = MagicMock()
+    existing_user.id = 1
+    user_query.filter.return_value.first.return_value = existing_user
+    hotel_query = MagicMock()
+    existing_hotel = MagicMock()
+    existing_hotel.id = 10
+    hotel_query.filter.return_value.first.return_value = existing_hotel
+    partner_room_query = MagicMock()
+    partner_room_query.filter.return_value.first.return_value = object()
+    session.query.side_effect = [room_query, user_query, user_query, hotel_query, partner_room_query]
 
     with patch.object(main, "SessionLocal", return_value=session):
         response = main.seed_database()
 
-    assert response == {"message": "Database already seeded"}
+    assert response["message"] == "Seed completed successfully"
+    assert response["rooms_created"] == 0
+    assert response["admin_created"] is False
+    assert response["partner_created"] is False
     session.close.assert_called_once()
 
 
@@ -121,15 +133,19 @@ def test_seed_database_seeds_rooms():
     session = MagicMock()
     room_query = MagicMock()
     room_query.count.return_value = 0
-    session.query.return_value = room_query
+    missing_query = MagicMock()
+    missing_query.filter.return_value.first.return_value = None
+    session.query.side_effect = [room_query, missing_query, missing_query, missing_query, missing_query]
 
-    fake_models = __import__("models")
-    with patch.object(main, "SessionLocal", return_value=session), patch.object(
-        builtins, "__import__", return_value=fake_models
-    ):
+    with patch.object(main, "SessionLocal", return_value=session):
         response = main.seed_database()
 
-    assert response == {"message": "Seeded 6 rooms successfully"}
-    assert session.add.call_count == 6
+    assert response["message"] == "Seed completed successfully"
+    assert response["rooms_created"] == 6
+    assert response["admin_created"] is True
+    assert response["partner_created"] is True
+    assert response["partner_hotel_created"] is True
+    assert response["partner_room_created"] is True
+    assert session.add.call_count == 10
     session.commit.assert_called_once()
     session.close.assert_called_once()
