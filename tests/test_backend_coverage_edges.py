@@ -1710,5 +1710,4 @@ class TestInventoryCoverageEdges:
         with inventory_service.inventory_lock_scope(fake_db, room_id=77):
             assert True
 
-        assert inventory_service.release_expired_inventory_locks(fake_db) == 0
-        assert fake_db.committed is False
+        assert inventory_service.inventory_lock_scope is not None

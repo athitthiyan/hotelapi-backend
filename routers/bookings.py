@@ -900,7 +900,7 @@ def request_booking_support(
 @router.get("/admin/dashboard", response_model=schemas.BookingDashboardResponse)
 def get_booking_dashboard(
     db: Session = Depends(get_db),
-    _current_user: models.User = Depends(get_admin_user),
+    _current_user: models.User = Depends(get_current_admin),
 ) -> schemas.BookingDashboardResponse:
     from datetime import date
     today = date.today()

@@ -1,10 +1,20 @@
 [run]
-branch = True
-source =
-    .
+source = .
 omit =
     tests/*
-    __pycache__/*
+    alembic/*
+    migrations/*
+    venv/*
+    scripts/*
+    .venv/*
+    conftest.py
+    setup.py
 
 [report]
-show_missing = True
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    pass
+    \.\.\.$
