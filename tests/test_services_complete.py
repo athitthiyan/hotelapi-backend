@@ -672,6 +672,13 @@ class TestNotificationService:
         sqlite_session.commit()
         assert notif.event_type == "booking_confirmed"
         assert notif.transaction_id == txn.id
+        # Must contain invoice PDF attachment
+        assert notif.attachment_pdf is not None
+        assert len(notif.attachment_pdf) > 0
+        assert notif.attachment_pdf[:5] == b"%PDF-"
+        assert notif.attachment_filename is not None
+        assert notif.attachment_filename.startswith("INV-")
+        assert notif.attachment_filename.endswith(".pdf")
 
     def test_queue_payment_receipt_email(self, sqlite_session, sample_booking):
         from services.notification_service import queue_payment_receipt_email
@@ -793,6 +800,298 @@ class TestNotificationService:
         sqlite_session.refresh(fail_notif)
         assert fail_notif.failure_reason is not None
         assert fail_notif.status == models.NotificationStatus.FAILED
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# document_service
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestDocumentService:
+    def test_invoice_number_format(self, sample_booking):
+        from services.document_service import invoice_number_for_booking
+        inv_no = invoice_number_for_booking(sample_booking)
+        assert inv_no == f"INV-{sample_booking.booking_ref}"
+
+    def test_build_invoice_pdf_returns_valid_pdf(self, sqlite_session, sample_booking):
+        from services.document_service import build_invoice_pdf
+        pdf = build_invoice_pdf(sample_booking)
+        assert isinstance(pdf, bytes)
+        assert len(pdf) > 100
+        assert pdf[:5] == b"%PDF-"
+
+    def test_build_invoice_pdf_with_refund_status(self, sqlite_session, sample_booking):
+        from services.document_service import build_invoice_pdf
+        sample_booking.payment_status = models.PaymentStatus.REFUNDED
+        sqlite_session.commit()
+        pdf = build_invoice_pdf(sample_booking)
+        assert isinstance(pdf, bytes)
+        assert pdf[:5] == b"%PDF-"
+
+    def test_build_invoice_pdf_no_room(self, sqlite_session, sample_booking):
+        from services.document_service import build_invoice_pdf
+        sample_booking.room = None
+        pdf = build_invoice_pdf(sample_booking)
+        assert isinstance(pdf, bytes)
+        assert pdf[:5] == b"%PDF-"
+
+    def test_build_invoice_pdf_with_partner_hotel(self, sqlite_session, sample_room, sample_booking):
+        from services.document_service import build_invoice_pdf
+        user = models.User(
+            email="partner-doc@example.com",
+            full_name="Doc Partner",
+            hashed_password="x",
+            is_partner=True,
+            is_active=True,
+        )
+        sqlite_session.add(user)
+        sqlite_session.commit()
+        sqlite_session.refresh(user)
+
+        hotel = models.PartnerHotel(
+            owner_user_id=user.id,
+            legal_name="Doc Hotel Pvt Ltd",
+            display_name="Doc Hotel",
+            support_email="doc@hotel.com",
+            address_line="123 Test St",
+            city="Mumbai",
+            country="India",
+            gst_number="22ABCDE1234F1Z5",
+        )
+        sqlite_session.add(hotel)
+        sqlite_session.commit()
+        sqlite_session.refresh(hotel)
+
+        sample_room.partner_hotel_id = hotel.id
+        sqlite_session.commit()
+        sqlite_session.refresh(sample_booking)
+
+        pdf = build_invoice_pdf(sample_booking)
+        assert isinstance(pdf, bytes)
+        assert pdf[:5] == b"%PDF-"
+
+    def test_build_voucher_pdf_returns_valid_pdf(self, sqlite_session, sample_booking):
+        from services.document_service import build_voucher_pdf
+        pdf = build_voucher_pdf(sample_booking)
+        assert isinstance(pdf, bytes)
+        assert len(pdf) > 100
+        assert pdf[:5] == b"%PDF-"
+
+    def test_build_voucher_pdf_no_room(self, sqlite_session, sample_booking):
+        from services.document_service import build_voucher_pdf
+        sample_booking.room = None
+        pdf = build_voucher_pdf(sample_booking)
+        assert isinstance(pdf, bytes)
+        assert pdf[:5] == b"%PDF-"
+
+    def test_build_voucher_pdf_with_special_requests(self, sqlite_session, sample_booking):
+        from services.document_service import build_voucher_pdf
+        sample_booking.special_requests = "Extra pillows please"
+        sqlite_session.commit()
+        pdf = build_voucher_pdf(sample_booking)
+        assert isinstance(pdf, bytes)
+        assert pdf[:5] == b"%PDF-"
+
+    def test_build_voucher_pdf_with_partner_hotel(self, sqlite_session, sample_room, sample_booking):
+        from services.document_service import build_voucher_pdf
+        user = models.User(
+            email="partner-voucher@example.com",
+            full_name="Voucher Partner",
+            hashed_password="x",
+            is_partner=True,
+            is_active=True,
+        )
+        sqlite_session.add(user)
+        sqlite_session.commit()
+        sqlite_session.refresh(user)
+
+        hotel = models.PartnerHotel(
+            owner_user_id=user.id,
+            legal_name="Voucher Hotel Pvt Ltd",
+            display_name="Voucher Hotel",
+            support_email="voucher@hotel.com",
+            support_phone="+919876543210",
+            address_line="456 Test Ave",
+            city="Delhi",
+            country="India",
+            check_in_time="15:00",
+            check_out_time="12:00",
+        )
+        sqlite_session.add(hotel)
+        sqlite_session.commit()
+        sqlite_session.refresh(hotel)
+
+        sample_room.partner_hotel_id = hotel.id
+        sqlite_session.commit()
+        sqlite_session.refresh(sample_booking)
+
+        pdf = build_voucher_pdf(sample_booking)
+        assert isinstance(pdf, bytes)
+        assert pdf[:5] == b"%PDF-"
+
+    def test_safe_date_none(self):
+        from services.document_service import _safe_date
+        assert _safe_date(None) == "N/A"
+
+    def test_safe_date_string(self):
+        from services.document_service import _safe_date
+        assert _safe_date("2030-06-01") == "2030-06-01"
+
+    def test_safe_date_datetime(self):
+        from services.document_service import _safe_date
+        dt = datetime(2030, 6, 1, 14, 0, tzinfo=timezone.utc)
+        assert _safe_date(dt) == "2030-06-01"
+
+    def test_safe_currency_valid(self):
+        from services.document_service import _safe_currency
+        assert _safe_currency(1234.5) == "INR 1,234.50"
+
+    def test_safe_currency_none(self):
+        from services.document_service import _safe_currency
+        assert _safe_currency(None) == "INR 0.00"
+
+    def test_safe_currency_invalid(self):
+        from services.document_service import _safe_currency
+        assert _safe_currency("not-a-number") == "INR 0.00"
+
+    def test_safe_currency_custom_symbol(self):
+        from services.document_service import _safe_currency
+        assert _safe_currency(100.0, symbol="USD") == "USD 100.00"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# notification_service — PDF attachment tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestNotificationAttachment:
+    def test_enqueue_with_attachment(self, sqlite_session, sample_booking):
+        from services.notification_service import enqueue_notification
+        pdf_data = b"%PDF-1.4 fake pdf content"
+        notif = enqueue_notification(
+            sqlite_session,
+            event_type="test_attachment",
+            recipient_email="test@example.com",
+            subject="Test",
+            body="Body",
+            booking_id=sample_booking.id,
+            attachment_pdf=pdf_data,
+            attachment_filename="test-invoice.pdf",
+        )
+        sqlite_session.commit()
+        sqlite_session.refresh(notif)
+        assert notif.attachment_pdf == pdf_data
+        assert notif.attachment_filename == "test-invoice.pdf"
+
+    def test_enqueue_without_attachment(self, sqlite_session, sample_booking):
+        from services.notification_service import enqueue_notification
+        notif = enqueue_notification(
+            sqlite_session,
+            event_type="test_no_attachment",
+            recipient_email="test@example.com",
+            subject="Test",
+            body="Body",
+            booking_id=sample_booking.id,
+        )
+        sqlite_session.commit()
+        assert notif.attachment_pdf is None
+        assert notif.attachment_filename is None
+
+    def test_confirmation_email_has_invoice_attached(self, sqlite_session, sample_booking):
+        from services.notification_service import queue_booking_confirmation_email
+        txn = models.Transaction(
+            booking_id=sample_booking.id,
+            transaction_ref="TXN-ATTACH001",
+            amount=134.0,
+            currency="USD",
+            payment_method="mock",
+            status=models.TransactionStatus.SUCCESS,
+        )
+        sqlite_session.add(txn)
+        sqlite_session.commit()
+        sqlite_session.refresh(txn)
+
+        notif = queue_booking_confirmation_email(sqlite_session, sample_booking, txn)
+        sqlite_session.commit()
+
+        assert notif.attachment_pdf is not None
+        assert notif.attachment_pdf[:5] == b"%PDF-"
+        assert notif.attachment_filename == f"INV-{sample_booking.booking_ref}.pdf"
+        assert "invoice" in notif.body.lower() or "Invoice" in notif.body
+
+    def test_other_emails_have_no_attachment(self, sqlite_session, sample_booking):
+        from services.notification_service import (
+            queue_booking_hold_email,
+            queue_booking_cancellation_email,
+            queue_refund_initiated_email,
+            queue_refund_success_email,
+            queue_refund_failure_email,
+        )
+        sample_booking.refund_amount = 100.0
+        sample_booking.refund_failed_reason = "test"
+        sqlite_session.commit()
+
+        for fn in [
+            lambda: queue_booking_hold_email(sqlite_session, sample_booking),
+            lambda: queue_booking_cancellation_email(sqlite_session, sample_booking),
+            lambda: queue_refund_initiated_email(sqlite_session, sample_booking),
+            lambda: queue_refund_success_email(sqlite_session, sample_booking),
+            lambda: queue_refund_failure_email(sqlite_session, sample_booking),
+        ]:
+            notif = fn()
+            sqlite_session.commit()
+            assert notif.attachment_pdf is None
+            assert notif.attachment_filename is None
+
+    def test_resend_params_include_attachment(self):
+        """Verify _send_via_resend builds correct params with attachment."""
+        import base64
+        from unittest.mock import patch, MagicMock
+
+        from services.notification_service import _send_via_resend
+
+        notif = MagicMock()
+        notif.recipient_email = "user@example.com"
+        notif.subject = "Test"
+        notif.body = "Body"
+        notif.attachment_pdf = b"%PDF-1.4 test"
+        notif.attachment_filename = "invoice.pdf"
+
+        mock_resend = MagicMock()
+        with patch.dict("sys.modules", {"resend": mock_resend}):
+            _send_via_resend(notif, "test-api-key", "Stayvora <noreply@test.com>")
+
+        call_args = mock_resend.Emails.send.call_args
+        params = call_args[0][0]
+        assert "attachments" in params
+        assert len(params["attachments"]) == 1
+        att = params["attachments"][0]
+        assert att["filename"] == "invoice.pdf"
+        assert att["content_type"] == "application/pdf"
+        # Verify base64 content
+        decoded = base64.b64decode(att["content"])
+        assert decoded == b"%PDF-1.4 test"
+
+    def test_resend_params_no_attachment(self):
+        """Verify _send_via_resend does NOT include attachments key when none."""
+        from unittest.mock import patch, MagicMock
+
+        from services.notification_service import _send_via_resend
+
+        notif = MagicMock()
+        notif.recipient_email = "user@example.com"
+        notif.subject = "Test"
+        notif.body = "Body"
+        notif.attachment_pdf = None
+        notif.attachment_filename = None
+
+        mock_resend = MagicMock()
+        with patch.dict("sys.modules", {"resend": mock_resend}):
+            _send_via_resend(notif, "test-api-key", "Stayvora <noreply@test.com>")
+
+        call_args = mock_resend.Emails.send.call_args
+        params = call_args[0][0]
+        assert "attachments" not in params
 
 
 # ─────────────────────────────────────────────────────────────────────────────

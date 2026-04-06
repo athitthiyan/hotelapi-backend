@@ -6,6 +6,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    LargeBinary,
     Text,
     Enum,
     Date,
@@ -319,8 +320,14 @@ class NotificationOutbox(Base):
     )
     failure_reason = Column(String(500))
     sent_at = Column(DateTime(timezone=True))
+    attachment_pdf = Column(LargeBinary)
+    attachment_filename = Column(String(255))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    @property
+    def has_attachment(self) -> bool:
+        return self.attachment_pdf is not None and len(self.attachment_pdf) > 0
 
 
 class RoomInventory(Base):

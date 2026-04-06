@@ -163,6 +163,13 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("MICROSOFT_CLIENT_ID", "microsoft_client_id"),
     )
+    # ── Feature Toggles ───────────────────────────────────────────────────────
+    # Set STRIPE_ENABLED=false in Railway / .env to disable Stripe payments
+    # without touching code. Razorpay and mock payments remain available.
+    stripe_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("STRIPE_ENABLED", "stripe_enabled"),
+    )
 
     @field_validator("database_url")
     @classmethod

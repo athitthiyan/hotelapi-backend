@@ -160,22 +160,74 @@ async def verify_razorpay_payment(
     if transaction.status == models.TransactionStatus.SUCCESS:
         return {"status": "success", "message": "Payment already confirmed"}
 
-    # Verify HMAC signature
+    # Step 1: Verify HMAC signature (mandatory — reject if key_secret is missing)
     key_secret = settings.razorpay_key_secret
-    if key_secret:
-        payload_str = f"{razorpay_order_id}|{razorpay_payment_id}"
-        expected_sig = hmac.new(
-            key_secret.encode(),
-            payload_str.encode(),
-            hashlib.sha256,
-        ).hexdigest()
-        if not hmac.compare_digest(expected_sig, razorpay_signature):
-            transaction.status = models.TransactionStatus.FAILED
-            transaction.failure_reason = "Signature verification failed"
-            db.commit()
-            raise HTTPException(status_code=400, detail="Payment signature verification failed")
+    if not key_secret:
+        raise HTTPException(
+            status_code=503,
+            detail="Razorpay key secret is not configured. Cannot verify payment.",
+        )
 
-    # Mark transaction success
+    payload_str = f"{razorpay_order_id}|{razorpay_payment_id}"
+    expected_sig = hmac.new(
+        key_secret.encode(),
+        payload_str.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected_sig, razorpay_signature):
+        transaction.status = models.TransactionStatus.FAILED
+        transaction.failure_reason = "Signature verification failed"
+        db.commit()
+        raise HTTPException(status_code=400, detail="Payment signature verification failed")
+
+    # Step 2: Verify payment status with Razorpay API (server-to-server check)
+    client = _get_razorpay_client()
+    try:
+        payment = client.payment.fetch(razorpay_payment_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to verify payment with Razorpay: {exc}",
+        ) from exc
+
+    payment_status = payment.get("status", "")
+    if payment_status != "captured":
+        # If payment is authorized but not captured, attempt capture
+        if payment_status == "authorized":
+            try:
+                client.payment.capture(razorpay_payment_id, payment.get("amount", 0))
+            except Exception as exc:
+                transaction.status = models.TransactionStatus.FAILED
+                transaction.failure_reason = f"Payment capture failed: {exc}"
+                db.commit()
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Payment capture failed: {exc}",
+                ) from exc
+        else:
+            transaction.status = models.TransactionStatus.FAILED
+            transaction.failure_reason = f"Payment not captured. Status: {payment_status}"
+            db.commit()
+            raise HTTPException(
+                status_code=400,
+                detail=f"Payment not completed. Razorpay status: {payment_status}",
+            )
+
+    # Verify the payment amount matches the order
+    if payment.get("order_id") != razorpay_order_id:
+        transaction.status = models.TransactionStatus.FAILED
+        transaction.failure_reason = "Order ID mismatch"
+        db.commit()
+        raise HTTPException(status_code=400, detail="Payment order ID mismatch")
+
+    expected_amount = int(transaction.amount * 100)
+    if payment.get("amount") != expected_amount:
+        transaction.status = models.TransactionStatus.FAILED
+        transaction.failure_reason = f"Amount mismatch: expected {expected_amount}, got {payment.get('amount')}"
+        db.commit()
+        raise HTTPException(status_code=400, detail="Payment amount mismatch")
+
+    # Step 3: All checks passed — mark transaction as success
     transaction.razorpay_payment_id = razorpay_payment_id
     transaction.razorpay_signature = razorpay_signature
     transaction.status = models.TransactionStatus.SUCCESS

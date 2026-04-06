@@ -10,6 +10,7 @@ Delivery flow:
 """
 from __future__ import annotations
 
+import base64
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -37,6 +38,8 @@ def enqueue_notification(
     body: str,
     booking_id: Optional[int] = None,
     transaction_id: Optional[int] = None,
+    attachment_pdf: Optional[bytes] = None,
+    attachment_filename: Optional[str] = None,
 ) -> models.NotificationOutbox:
     notification = models.NotificationOutbox(
         booking_id=booking_id,
@@ -46,6 +49,8 @@ def enqueue_notification(
         subject=subject,
         body=body,
         status=models.NotificationStatus.PENDING,
+        attachment_pdf=attachment_pdf,
+        attachment_filename=attachment_filename,
     )
     db.add(notification)
     db.flush()
@@ -74,25 +79,42 @@ def queue_booking_hold_email(db, booking: models.Booking) -> models.Notification
 def queue_booking_confirmation_email(
     db, booking: models.Booking, transaction: models.Transaction
 ) -> models.NotificationOutbox:
+    # Generate invoice PDF to attach
+    from services.document_service import build_invoice_pdf, invoice_number_for_booking
+
+    try:
+        pdf_bytes = build_invoice_pdf(booking)
+        filename = f"{invoice_number_for_booking(booking)}.pdf"
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to generate invoice PDF for booking %s", booking.booking_ref)
+        pdf_bytes = None
+        filename = None
+
     return enqueue_notification(
         db,
         event_type="booking_confirmed",
         recipient_email=booking.email,
         booking_id=booking.id,
         transaction_id=transaction.id,
-        subject=f"Booking confirmed — {booking.booking_ref}",
+        subject=f"Booking Confirmed — {booking.booking_ref} | Your Invoice is Attached",
         body=(
             f"Hi {booking.user_name},\n\n"
-            f"Your booking is CONFIRMED.\n\n"
-            f"Booking ref  : {booking.booking_ref}\n"
-            f"Transaction  : {transaction.transaction_ref}\n"
-            f"Check-in     : {booking.check_in}\n"
-            f"Check-out    : {booking.check_out}\n"
-            f"Guests       : {booking.guests}\n"
-            f"Total paid   : ${booking.total_amount:.2f}\n\n"
-            "Your invoice is available in the Stayvora app.\n\n"
+            f"Great news! Your booking is CONFIRMED.\n\n"
+            f"Booking Ref   : {booking.booking_ref}\n"
+            f"Transaction   : {transaction.transaction_ref}\n"
+            f"Hotel         : {booking.room.hotel_name if booking.room else 'Stayvora Hotel'}\n"
+            f"Room          : {booking.room.room_type_name if booking.room and booking.room.room_type_name else 'Room'}\n"
+            f"Check-in      : {booking.check_in}\n"
+            f"Check-out     : {booking.check_out}\n"
+            f"Guests        : {booking.guests}\n"
+            f"Total Paid    : INR {booking.total_amount:.2f}\n\n"
+            "Your tax invoice is attached to this email as a PDF.\n"
+            "You can also download it anytime from the Stayvora app.\n\n"
+            "We hope you have a wonderful stay!\n\n"
             "— Stayvora Team"
         ),
+        attachment_pdf=pdf_bytes,
+        attachment_filename=filename,
     )
 
 
@@ -108,7 +130,7 @@ def queue_payment_receipt_email(
         subject=f"Payment receipt — {booking.booking_ref}",
         body=(
             f"Hi {booking.user_name},\n\n"
-            f"We received your payment of ${transaction.amount:.2f}.\n\n"
+            f"We received your payment of INR {transaction.amount:.2f}.\n\n"
             f"Booking ref     : {booking.booking_ref}\n"
             f"Transaction ref : {transaction.transaction_ref}\n"
             f"Payment method  : {transaction.payment_method or 'Card'}\n\n"
@@ -173,7 +195,7 @@ def queue_refund_initiated_email(db, booking: models.Booking) -> models.Notifica
         body=(
             f"Hi {booking.user_name},\n\n"
             f"Your refund for booking {booking.booking_ref} has been initiated.\n\n"
-            f"Refund amount : ${booking.refund_amount:.2f}\n"
+            f"Refund amount : INR {booking.refund_amount:.2f}\n"
             f"Expected by   : {settlement}\n\n"
             "You will receive another email once the refund completes.\n\n"
             "— Stayvora Team"
@@ -190,7 +212,7 @@ def queue_refund_success_email(db, booking: models.Booking) -> models.Notificati
         subject=f"Refund complete — {booking.booking_ref}",
         body=(
             f"Hi {booking.user_name},\n\n"
-            f"Your refund of ${booking.refund_amount:.2f} for booking "
+            f"Your refund of INR {booking.refund_amount:.2f} for booking "
             f"{booking.booking_ref} has been processed.\n\n"
             f"Gateway reference: {booking.refund_gateway_reference or 'N/A'}\n\n"
             "Please allow 2-5 business days for the amount to appear in your account.\n\n"
@@ -276,12 +298,24 @@ def _send_via_resend(
         ) from exc
 
     resend.api_key = api_key
-    params = {
+    params: dict = {
         "from": from_addr,
         "to": [notification.recipient_email],
         "subject": notification.subject,
         "text": notification.body,
     }
+
+    # Attach PDF if present
+    if notification.attachment_pdf and notification.attachment_filename:
+        b64_content = base64.b64encode(notification.attachment_pdf).decode("ascii")
+        params["attachments"] = [
+            {
+                "filename": notification.attachment_filename,
+                "content": b64_content,
+                "content_type": "application/pdf",
+            }
+        ]
+
     resend.Emails.send(params)  # type: ignore[attr-defined]
 
 
@@ -309,9 +343,10 @@ def deliver_notification(notification: models.NotificationOutbox) -> None:
     from_addr = f"{config.email_from_name} <{config.email_from_address}>"
     _send_via_resend(notification, config.resend_api_key, from_addr)
     logger.info(
-        "Email delivered via Resend: event=%s to=%s",
+        "Email delivered via Resend: event=%s to=%s attachment=%s",
         notification.event_type,
         notification.recipient_email,
+        notification.attachment_filename or "none",
     )
 
 

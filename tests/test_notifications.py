@@ -66,6 +66,19 @@ def test_payment_success_queues_confirmation_and_receipt_notifications(
         "payment_receipt",
     ]
 
+    # Confirmation email must have invoice PDF attached
+    confirmation = [n for n in notifications if n.event_type == "booking_confirmed"][0]
+    assert confirmation.attachment_pdf is not None
+    assert confirmation.attachment_pdf[:5] == b"%PDF-"
+    assert confirmation.attachment_filename is not None
+    assert confirmation.attachment_filename.endswith(".pdf")
+
+    # Hold and receipt emails must NOT have attachments
+    hold = [n for n in notifications if n.event_type == "booking_hold_created"][0]
+    receipt = [n for n in notifications if n.event_type == "payment_receipt"][0]
+    assert hold.attachment_pdf is None
+    assert receipt.attachment_pdf is None
+
 
 def test_payment_failure_queues_retry_notification(client, create_booking, db_session):
     booking = create_booking()

@@ -98,6 +98,10 @@ _HARDCODED_ORIGINS = [
     "https://payflow-payment-app.vercel.app",
     "https://insightboard-admin.vercel.app",
     "https://stayease-partner-portal.vercel.app",
+    "http://localhost:4200",
+    "http://localhost:4201",
+    "http://localhost:4202",
+    "http://localhost:4203",
 ]
 _env_origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
 origins = list(set(_env_origins + _HARDCODED_ORIGINS))

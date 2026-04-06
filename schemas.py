@@ -749,6 +749,8 @@ class NotificationOutboxResponse(BaseModel):
     status: NotificationStatus
     failure_reason: Optional[str] = None
     sent_at: Optional[datetime] = None
+    has_attachment: bool = False
+    attachment_filename: Optional[str] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

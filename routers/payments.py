@@ -971,6 +971,19 @@ def create_payment_intent(
         db.refresh(transaction)
         return build_payment_intent_response(transaction, booking, "mock")
 
+    # ── Stripe feature toggle ─────────────────────────────────────────────────
+    # Controlled by STRIPE_ENABLED env var. Set to false to route all traffic
+    # through Razorpay (or mock) without code changes. Existing confirmed
+    # bookings and webhook callbacks are unaffected.
+    if payload.payment_method == "stripe" and not settings.stripe_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "STRIPE_DISABLED",
+                "message": "Stripe payments are currently unavailable. Please use an alternative payment method.",
+            },
+        )
+
     stripe.api_key = settings.stripe_secret_key
     try:
         intent = stripe.PaymentIntent.create(
@@ -1565,12 +1578,33 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                     transaction = db.query(models.Transaction).filter(
                         models.Transaction.transaction_ref == transaction_ref
                     ).first()
-                if transaction and transaction.status == models.TransactionStatus.PENDING:
-                    err = payment_intent.get("last_payment_error", {})
+                if transaction and transaction.status not in (
+                    models.TransactionStatus.SUCCESS,
+                    models.TransactionStatus.REFUNDED,
+                ):
                     transaction.status = models.TransactionStatus.FAILED
-                    transaction.failure_reason = err.get("message", "Payment failed")
-                    booking.payment_status = models.PaymentStatus.FAILED
-                    queue_payment_failure_email(db, booking, transaction, err.get("message", "Payment failed"))
-                    db.commit()
+                    transaction.failure_reason = payment_intent.get(
+                        "last_payment_error", {}
+                    ).get("message", "Payment failed via Stripe webhook")
+
+                apply_failed_state(booking)
+
+                if transaction:
+                    if not _notification_exists(
+                        db,
+                        booking_id=booking.id,
+                        transaction_id=transaction.id,
+                        event_type="payment_failed",
+                    ):
+                        queue_payment_failure_email(db, booking, transaction)
+
+                db.commit()
+                write_payment_audit(
+                    db,
+                    action="webhook.payment_intent.payment_failed",
+                    booking=booking,
+                    transaction=transaction,
+                    metadata={"payment_intent_id": payment_intent.get("id")},
+                )
 
     return {"status": "ok"}
