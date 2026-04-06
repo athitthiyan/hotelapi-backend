@@ -354,7 +354,7 @@ class TestAuthCoverageEdges:
 
     @pytest.mark.anyio
     async def test_social_login_covers_provider_and_google_error_paths(self, db_session):
-        with pytest.raises(HTTPException, match="Only 'google' provider is supported"):
+        with pytest.raises(HTTPException, match="Unsupported provider"):
             await auth.social_login(
                 schemas.SocialLoginRequest(provider="github", id_token="token"),
                 db=db_session,
@@ -452,7 +452,7 @@ class TestAuthCoverageEdges:
                     )
                 ),
             )
-            with pytest.raises(HTTPException, match="User account is inactive"):
+            with pytest.raises(HTTPException, match="deactivated"):
                 await auth.social_login(
                     schemas.SocialLoginRequest(provider="google", id_token="token"),
                     db=db_session,

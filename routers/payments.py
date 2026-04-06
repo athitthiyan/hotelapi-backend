@@ -48,6 +48,24 @@ FAILED_PAYMENT_ESCALATED_BLOCK_SECONDS = 15 * 60
 REFUND_SETTLEMENT_DAYS = 5
 
 
+def _notification_exists(
+    db: Session,
+    *,
+    booking_id: int,
+    transaction_id: int,
+    event_type: str,
+) -> bool:
+    return bool(
+        db.query(models.NotificationOutbox)
+        .filter(
+            models.NotificationOutbox.booking_id == booking_id,
+            models.NotificationOutbox.transaction_id == transaction_id,
+            models.NotificationOutbox.event_type == event_type,
+        )
+        .first()
+    )
+
+
 def ops_alert_recipient() -> str:
     return settings.seed_admin_email or "ops@stayvora.co.in"
 
@@ -1521,8 +1539,13 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                 queue_payment_receipt_email(db, booking, transaction)
 
         db.commit()
-        write_payment_audit(db, booking_id=booking.id, action="webhook_confirmed",
-                            actor_id=None, notes=f"Stripe webhook confirmed payment_intent {payment_intent.get('id')}")
+        write_payment_audit(
+            db,
+            action="webhook.payment_intent.succeeded",
+            booking=booking,
+            transaction=transaction,
+            metadata={"payment_intent_id": payment_intent.get("id")},
+        )
 
     elif event["type"] == "payment_intent.payment_failed":
         payment_intent = event["data"]["object"]
@@ -1547,7 +1570,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                     transaction.status = models.TransactionStatus.FAILED
                     transaction.failure_reason = err.get("message", "Payment failed")
                     booking.payment_status = models.PaymentStatus.FAILED
-                    queue_payment_failure_email(db, booking, transaction)
+                    queue_payment_failure_email(db, booking, transaction, err.get("message", "Payment failed"))
                     db.commit()
 
     return {"status": "ok"}

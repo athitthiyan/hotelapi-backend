@@ -765,7 +765,7 @@ def test_payment_status_reconciles_delayed_card_confirmation_without_waiting_for
         status_response = client.get(f"/payments/status/{booking['id']}")
 
     booking_row = db_session.query(models.Booking).filter_by(id=booking["id"]).first()
-    latest_transaction = (
+    _latest_transaction = (
         db_session.query(models.Transaction)
         .filter_by(booking_id=booking["id"])
         .order_by(models.Transaction.id.desc())

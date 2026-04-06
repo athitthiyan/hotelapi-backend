@@ -14,12 +14,12 @@ from routers.auth import get_current_admin, get_current_user
 router = APIRouter(prefix="/reviews", tags=["Reviews"])
 
 
-def _build_rating_breakdown(reviews: list[models.Review]) -> dict:
-    if not reviews:
-        return {"1": 0, "2": 0, "3": 0, "4": 0, "5": 0}
+def _build_rating_breakdown(reviews: list) -> dict:
     counts: dict[str, int] = {"1": 0, "2": 0, "3": 0, "4": 0, "5": 0}
     for r in reviews:
-        counts[str(r.rating)] += 1
+        key = str(r.rating)
+        if key in counts:
+            counts[key] += 1
     return counts
 
 
@@ -79,14 +79,23 @@ def get_room_reviews(
         .limit(per_page)
         .all()
     )
-    all_reviews = (
-        db.query(models.Review)
+
+    agg = (
+        db.query(func.avg(models.Review.rating))
         .filter(models.Review.room_id == room_id)
+        .scalar()
+    )
+    avg_rating = round(float(agg), 2) if agg is not None else 0.0
+
+    breakdown_rows = (
+        db.query(models.Review.rating, func.count(models.Review.id))
+        .filter(models.Review.room_id == room_id)
+        .group_by(models.Review.rating)
         .all()
     )
-
-    avg_rating = round(sum(r.rating for r in all_reviews) / total, 2) if total else 0.0
-    breakdown = _build_rating_breakdown(all_reviews)
+    breakdown: dict[str, int] = {"1": 0, "2": 0, "3": 0, "4": 0, "5": 0}
+    for rating, count in breakdown_rows:
+        breakdown[str(rating)] = count
 
     return schemas.ReviewListResponse(
         reviews=[_review_to_response(r) for r in reviews],

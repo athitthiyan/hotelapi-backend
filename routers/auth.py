@@ -8,17 +8,22 @@ import httpx as _httpx
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from passlib.exc import PasswordValueError, UnknownHashError
-from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from sqlalchemy.orm import Session, joinedload
 
 import models
 import schemas
 from database import get_db, settings
-from services.payment_state_service import (
-    attach_bookings_lifecycle_state,
-    reconcile_bookings_payment_states,
-)
+from services.payment_state_service import attach_bookings_lifecycle_state
 from services.rate_limit_service import enforce_rate_limit
+
+
+class MyBookingsResponse(BaseModel):
+    total: int
+    upcoming: int
+    past: int
+    cancelled: int
+    bookings: list = []
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -230,6 +235,54 @@ def read_me(user: models.User = Depends(get_current_user)):
     return user
 
 
+@router.get("/me/bookings")
+def my_bookings(
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from datetime import timezone as _tz
+
+    def _aware(dt: datetime) -> datetime:
+        return dt.replace(tzinfo=_tz.utc) if dt.tzinfo is None else dt
+
+    now = datetime.now(_tz.utc)
+    bookings = (
+        db.query(models.Booking)
+        .options(joinedload(models.Booking.room))
+        .filter(models.Booking.email == user.email)
+        .order_by(models.Booking.created_at.desc())
+        .all()
+    )
+    attach_bookings_lifecycle_state(db, bookings)
+    upcoming = sum(
+        1 for b in bookings
+        if b.status in (
+            models.BookingStatus.CONFIRMED,
+            models.BookingStatus.PROCESSING,
+            models.BookingStatus.PENDING,
+        ) and _aware(b.check_in) >= now
+    )
+    cancelled = sum(
+        1 for b in bookings
+        if b.status in (models.BookingStatus.CANCELLED, models.BookingStatus.EXPIRED)
+    )
+    past = sum(
+        1 for b in bookings
+        if b.status == models.BookingStatus.COMPLETED
+        or (
+            b.status not in (models.BookingStatus.CANCELLED, models.BookingStatus.EXPIRED)
+            and _aware(b.check_in) < now
+        )
+    )
+    return MyBookingsResponse(
+        total=len(bookings),
+        upcoming=upcoming,
+        past=past,
+        cancelled=cancelled,
+        bookings=[schemas.BookingResponse.model_validate(b) for b in bookings],
+    )
+
+
 # ─── Profile ──────────────────────────────────────────────────────────────────
 
 @router.post("/phone/request-otp", response_model=schemas.PhoneOtpResponse)
@@ -409,15 +462,18 @@ MICROSOFT_JWKS_URL = "https://login.microsoftonline.com/common/discovery/v2.0/ke
 
 async def _verify_google_token(id_token: str) -> dict:
     async with _httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(
-            GOOGLE_USERINFO_URL,
-            headers={"Authorization": f"Bearer {id_token}"},
-        )
+        try:
+            resp = await client.get(
+                GOOGLE_USERINFO_URL,
+                headers={"Authorization": f"Bearer {id_token}"},
+            )
+        except _httpx.RequestError as exc:
+            raise HTTPException(status_code=502, detail="Failed to verify Google token") from exc
     if resp.status_code != 200:
         raise HTTPException(status_code=401, detail="Google token verification failed")
     data = resp.json()
     if not data.get("email"):
-        raise HTTPException(status_code=401, detail="Google token missing email")
+        raise HTTPException(status_code=401, detail="Insufficient data from Google")
     return {
         "provider_id": data.get("sub", ""),
         "email": data.get("email", ""),
@@ -430,7 +486,7 @@ async def _verify_google_token(id_token: str) -> dict:
 async def _verify_jwks_token(id_token: str, jwks_url: str, audience: str | None) -> dict:
     """Verify a JWT signed by a JWKS-backed provider (Apple, Microsoft)."""
     try:
-        from jose import jwt as jose_jwt, jwk
+        from jose import jwt as jose_jwt
     except ImportError as exc:
         raise HTTPException(status_code=500, detail="jose not installed") from exc
     async with _httpx.AsyncClient(timeout=10) as client:
@@ -535,18 +591,9 @@ async def social_login(
         db.commit()
         db.refresh(user)
 
-    access_token = create_access_token(
-        data={"sub": str(user.id)},
-        expires_delta=timedelta(minutes=settings.access_token_exp_minutes),
-    )
-    refresh_token = create_refresh_token(str(user.id))
     db.commit()
-    return schemas.TokenResponse(
-        access_token=access_token,
-        refresh_token=refresh_token,
-        token_type="bearer",
-        user=schemas.UserResponse.model_validate(user),
-    )
+    db.refresh(user)
+    return build_token_response(user)
 
 
 # ─── Email Verification ───────────────────────────────────────────────────────
@@ -567,7 +614,6 @@ async def send_verification_email(
     from services.notification_service import enqueue_notification
     enqueue_notification(
         db,
-        user_id=current_user.id,
         event_type="email_verification",
         recipient_email=current_user.email,
         subject="Verify your Stayvora email address",

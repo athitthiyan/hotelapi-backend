@@ -14,9 +14,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
 import models
-import schemas
 from database import get_db, settings
-from routers.auth import get_current_user
 from services.inventory_service import confirm_inventory_for_booking
 from services.notification_service import (
     queue_booking_confirmation_email,
@@ -224,8 +222,8 @@ async def razorpay_webhook(
     import json
     try:
         event = json.loads(body)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
 
     event_type = event.get("event", "")
     payload = event.get("payload", {})
@@ -235,7 +233,7 @@ async def razorpay_webhook(
         razorpay_order_id = payment.get("order_id")
         razorpay_payment_id = payment.get("id")
         notes = payment.get("notes", {})
-        booking_id = notes.get("booking_id")
+        _booking_id = notes.get("booking_id")
 
         if razorpay_order_id:
             transaction = db.query(models.Transaction).filter(
@@ -270,7 +268,7 @@ async def razorpay_webhook(
                 ).first()
                 if booking:
                     booking.payment_status = models.PaymentStatus.FAILED
-                    queue_payment_failure_email(db, booking, transaction)
+                    queue_payment_failure_email(db, booking, transaction, payment.get("error_description", "Payment failed"))
                 db.commit()
 
     return {"status": "ok"}
