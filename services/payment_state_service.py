@@ -177,39 +177,38 @@ def derive_booking_lifecycle_state(
     if not booking:
         return None
 
+    lifecycle_state = "HOLD_CREATED"
     if booking.status == models.BookingStatus.CANCELLED:
-        return "CANCELLED"
-    if (
+        lifecycle_state = "CANCELLED"
+    elif (
         booking.status == models.BookingStatus.EXPIRED
         or booking.payment_status == models.PaymentStatus.EXPIRED
     ):
-        return "EXPIRED"
-    if (
+        lifecycle_state = "EXPIRED"
+    elif (
         booking.status == models.BookingStatus.CONFIRMED
         and booking.payment_status in {models.PaymentStatus.PAID, models.PaymentStatus.REFUNDED}
     ):
-        return "CONFIRMED"
-
-    if latest_transaction is not None:
+        lifecycle_state = "CONFIRMED"
+    elif latest_transaction is not None:
         if latest_transaction.status == models.TransactionStatus.SUCCESS:
-            return "PAYMENT_SUCCESS"
-        if latest_transaction.status in {
+            lifecycle_state = "PAYMENT_SUCCESS"
+        elif latest_transaction.status in {
             models.TransactionStatus.FAILED,
             models.TransactionStatus.EXPIRED,
         } or booking.payment_status == models.PaymentStatus.FAILED:
-            return "PAYMENT_FAILED"
-        if (
+            lifecycle_state = "PAYMENT_FAILED"
+        elif (
             latest_transaction.retry_of_transaction_id
             and latest_transaction.status in PROCESSING_TRANSACTION_STATUSES
         ):
-            return "PAYMENT_RETRY"
-        if latest_transaction.status in PROCESSING_TRANSACTION_STATUSES:
-            return "PAYMENT_PENDING"
+            lifecycle_state = "PAYMENT_RETRY"
+        elif latest_transaction.status in PROCESSING_TRANSACTION_STATUSES:
+            lifecycle_state = "PAYMENT_PENDING"
+    elif booking.status == models.BookingStatus.PROCESSING or booking.payment_status == models.PaymentStatus.PROCESSING:
+        lifecycle_state = "PAYMENT_PENDING"
 
-    if booking.status == models.BookingStatus.PROCESSING or booking.payment_status == models.PaymentStatus.PROCESSING:
-        return "PAYMENT_PENDING"
-
-    return "HOLD_CREATED"
+    return lifecycle_state
 
 
 def attach_booking_lifecycle_state(
@@ -271,5 +270,4 @@ def reconcile_bookings_payment_states(db: Session, bookings: list[models.Booking
     changed = False
     for booking in bookings:
         changed = reconcile_gateway_payment_state(db, booking) or changed
-        changed = reconcile_booking_payment_state(db, booking) or changed
     return changed

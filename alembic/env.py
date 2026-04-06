@@ -6,7 +6,7 @@ from alembic import context
 from sqlalchemy import create_engine, pool
 
 from database import Base, settings
-import models  # noqa: F401
+import models  # noqa: F401  # pylint: disable=unused-import
 
 config = context.config
 
@@ -52,5 +52,4 @@ def run_migrations_online() -> None:
 
 if context.is_offline_mode():
     run_migrations_offline()
-else:
-    run_migrations_online()
+e

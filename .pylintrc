@@ -1,5 +1,6 @@
 [MAIN]
 persistent = no
+init-hook = 'import sys; from pathlib import Path; sys.path.insert(0, str(Path.cwd()))'
 ignore = alembic,benchmarks,scripts,tests,__pycache__,.pytest_cache
 
 [MESSAGES CONTROL]
@@ -26,11 +27,4 @@ disable =
     too-many-positional-arguments,
     useless-return,
     wrong-import-order,
-    wrong-import-position,
-    broad-exception-caught
-
-[FORMAT]
-max-line-length = 120
-
-[REPORTS]
-score = no
+    wrong-import-pos

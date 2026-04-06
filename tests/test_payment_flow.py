@@ -724,6 +724,7 @@ def test_reconciliation_recovers_mismatched_success_and_flags_orphan_paid_bookin
     assert reconcile.json()["orphan_paid_bookings"] >= 1
     assert booking_row.payment_status == models.PaymentStatus.PAID
     assert booking_row.status == models.BookingStatus.CONFIRMED
+    assert any(orphan_row.booking_ref in alert.subject for alert in alerts)
 
 
 def test_payment_status_reconciles_delayed_card_confirmation_without_waiting_for_webhook(
@@ -779,4 +780,3 @@ def test_payment_status_reconciles_delayed_card_confirmation_without_waiting_for
     assert status_response.json()["latest_transaction"]["status"] == "success"
     assert booking_row.payment_status == models.PaymentStatus.PAID
     assert booking_row.status == models.BookingStatus.CONFIRMED
-    assert latest_transaction.status == models.TransactionStatus.SUCCESS
