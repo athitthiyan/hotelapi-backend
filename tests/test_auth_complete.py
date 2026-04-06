@@ -7,6 +7,7 @@ wrong token type, admin guard, refresh, and helper functions.
 from __future__ import annotations
 
 import bcrypt
+from datetime import datetime, timedelta, timezone
 import pytest
 
 import models
@@ -251,6 +252,53 @@ class TestGetMe:
         refresh_token = login.json()["refresh_token"]
         r = client.get("/auth/me", headers=auth_header(refresh_token))
         assert r.status_code == 401
+
+    def test_me_bookings_reconciles_successful_processing_booking(self, client, db_session, room_id):
+        signup = client.post("/auth/signup", json=signup_payload())
+        token = signup.json()["access_token"]
+        user_id = signup.json()["user"]["id"]
+
+        booking = models.Booking(
+            booking_ref="BKRECON01",
+            user_name="Athit",
+            email="athit@example.com",
+            user_id=user_id,
+            phone="1234567890",
+            room_id=room_id,
+            check_in=datetime.now(timezone.utc) + timedelta(days=1),
+            check_out=datetime.now(timezone.utc) + timedelta(days=2),
+            hold_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            guests=2,
+            nights=1,
+            room_rate=200,
+            taxes=24,
+            service_fee=10,
+            total_amount=234,
+            status=models.BookingStatus.PROCESSING,
+            payment_status=models.PaymentStatus.PROCESSING,
+        )
+        db_session.add(booking)
+        db_session.flush()
+        db_session.add(
+            models.Transaction(
+                booking_id=booking.id,
+                transaction_ref="TXN-AUTH-RECONCILE",
+                amount=234,
+                currency="USD",
+                payment_method="card",
+                status=models.TransactionStatus.SUCCESS,
+            )
+        )
+        db_session.commit()
+
+        response = client.get("/auth/me/bookings", headers=auth_header(token))
+
+        db_session.refresh(booking)
+        assert response.status_code == 200
+        assert response.json()["bookings"][0]["status"] == "confirmed"
+        assert response.json()["bookings"][0]["payment_status"] == "paid"
+        assert booking.status == models.BookingStatus.CONFIRMED
+        assert booking.payment_status == models.PaymentStatus.PAID
 
 
 class TestAdminGuard:

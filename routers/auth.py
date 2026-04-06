@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 import models
 import schemas
 from database import get_db, settings
+from services.payment_state_service import reconcile_bookings_payment_states
 from services.rate_limit_service import enforce_rate_limit
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -382,6 +383,10 @@ def my_bookings(
         .order_by(models.Booking.created_at.desc())
         .all()
     )
+    if reconcile_bookings_payment_states(db, bookings):
+        db.commit()
+        for booking in bookings:
+            db.refresh(booking)
     from datetime import timezone as _tz
     now = datetime.now(_tz.utc)
     upcoming = sum(

@@ -313,6 +313,37 @@ def test_get_booking_by_ref_expires_stale_holds(client, create_booking, db_sessi
     assert response.json()["status"] == "expired"
 
 
+def test_get_booking_by_ref_reconciles_processing_booking_with_success_transaction(
+    client,
+    create_booking,
+    db_session,
+):
+    created = create_booking()
+    booking = db_session.query(models.Booking).filter_by(id=created["id"]).first()
+    booking.status = models.BookingStatus.PROCESSING
+    booking.payment_status = models.PaymentStatus.PROCESSING
+    db_session.add(
+        models.Transaction(
+            booking_id=booking.id,
+            transaction_ref="TXN-BYREF-RECONCILE",
+            amount=booking.total_amount,
+            currency="USD",
+            payment_method="card",
+            status=models.TransactionStatus.SUCCESS,
+        )
+    )
+    db_session.commit()
+
+    response = client.get(f"/bookings/ref/{created['booking_ref']}")
+
+    db_session.refresh(booking)
+    assert response.status_code == 200
+    assert response.json()["status"] == "confirmed"
+    assert response.json()["payment_status"] == "paid"
+    assert booking.status == models.BookingStatus.CONFIRMED
+    assert booking.payment_status == models.PaymentStatus.PAID
+
+
 def test_get_active_hold_returns_current_logged_in_hold(client, db_session, room_id):
     headers = user_headers(client, db_session)
     created = client.post("/bookings", json=booking_payload(room_id)).json()
@@ -364,6 +395,32 @@ def test_get_active_hold_includes_processing_payment_holds(client, db_session, r
 
     assert response.status_code == 200
     assert response.json()["booking_id"] == created["id"]
+
+
+def test_get_active_hold_reconciles_successful_processing_booking(client, db_session, room_id):
+    headers = user_headers(client, db_session)
+    created = client.post("/bookings", json=booking_payload(room_id)).json()
+    booking = db_session.query(models.Booking).filter_by(id=created["id"]).first()
+    booking.status = models.BookingStatus.PROCESSING
+    booking.payment_status = models.PaymentStatus.PROCESSING
+    db_session.add(
+        models.Transaction(
+            booking_id=booking.id,
+            transaction_ref="TXN-HOLD-RECONCILE",
+            amount=booking.total_amount,
+            currency="USD",
+            payment_method="card",
+            status=models.TransactionStatus.SUCCESS,
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/bookings/active-hold", headers=headers)
+
+    db_session.refresh(booking)
+    assert response.status_code == 204
+    assert booking.status == models.BookingStatus.CONFIRMED
+    assert booking.payment_status == models.PaymentStatus.PAID
 
 
 def test_get_active_hold_requires_authentication(client):

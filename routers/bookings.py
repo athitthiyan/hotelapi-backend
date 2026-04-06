@@ -32,6 +32,10 @@ from services.notification_service import (
     queue_booking_hold_email,
     queue_booking_support_request_email,
 )
+from services.payment_state_service import (
+    reconcile_booking_payment_state,
+    reconcile_bookings_payment_states,
+)
 from services.audit_service import write_audit_log
 from services.document_service import (
     build_invoice_pdf,
@@ -168,6 +172,10 @@ def get_latest_active_hold_for_user(
         .order_by(models.Booking.created_at.desc())
         .all()
     )
+    if reconcile_bookings_payment_states(db, candidate_bookings):
+        db.commit()
+        for booking in candidate_bookings:
+            db.refresh(booking)
     return next(
         (booking for booking in candidate_bookings if has_active_user_hold(booking, now=now)),
         None,
@@ -462,6 +470,10 @@ def get_booking_history(
         .order_by(models.Booking.created_at.desc())
         .all()
     )
+    if reconcile_bookings_payment_states(db, bookings):
+        db.commit()
+        for booking in bookings:
+            db.refresh(booking)
 
     return {"bookings": bookings, "total": len(bookings)}
 
@@ -646,7 +658,11 @@ def extend_booking_hold(
 @router.get("/{booking_id}", response_model=schemas.BookingResponse)
 def get_booking(booking_id: int, db: Session = Depends(get_db)):
     release_expired_holds(db, booking_id=booking_id)
-    return get_booking_or_404(db, booking_id)
+    booking = get_booking_or_404(db, booking_id)
+    if reconcile_booking_payment_state(db, booking):
+        db.commit()
+        db.refresh(booking)
+    return booking
 
 
 @router.get("/ref/{booking_ref}", response_model=schemas.BookingResponse)
@@ -661,6 +677,9 @@ def get_booking_by_ref(booking_ref: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Booking not found")
 
     if expire_stale_booking_hold(booking):
+        db.commit()
+        db.refresh(booking)
+    elif reconcile_booking_payment_state(db, booking):
         db.commit()
         db.refresh(booking)
     return booking
