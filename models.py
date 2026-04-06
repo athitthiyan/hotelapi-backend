@@ -115,6 +115,7 @@ class User(Base):
     wishlists = relationship("Wishlist", back_populates="user")
     partner_hotels = relationship("PartnerHotel", back_populates="owner")
     bookings = relationship("Booking", back_populates="user")
+    password_reset_tokens = relationship("PasswordResetToken", back_populates="user")
 
 
 class PartnerHotel(Base):
@@ -445,4 +446,9 @@ class PasswordResetToken(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    token_hash = Column
+    token_hash = Column(String(256), nullable=False, unique=True, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="password_reset_tokens")
