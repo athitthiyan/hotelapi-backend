@@ -436,6 +436,30 @@ def get_card_details(payment_intent: dict) -> tuple[Optional[str], Optional[str]
     return card.get("last4"), card.get("brand")
 
 
+def verify_card_payment_intent_succeeded(
+    payment_intent_id: Optional[str],
+) -> tuple[bool, Optional[str], Optional[str]]:
+    if not payment_intent_id or not settings.stripe_secret_key:
+        return False, None, None
+
+    stripe.api_key = settings.stripe_secret_key
+    try:
+        payment_intent = stripe.PaymentIntent.retrieve(payment_intent_id)
+    except Exception:
+        return False, None, None
+
+    status = (
+        payment_intent.get("status")
+        if isinstance(payment_intent, dict)
+        else getattr(payment_intent, "status", None)
+    )
+    if status != "succeeded":
+        return False, None, None
+
+    last4, brand = get_card_details(payment_intent)
+    return True, last4, brand
+
+
 def build_payment_intent_response(
     transaction: models.Transaction,
     booking: models.Booking,
@@ -580,6 +604,20 @@ def get_successful_or_processing_response(
     existing_success = get_success_transaction_for_booking(db, booking.id)
     if existing_success:
         return get_transaction_with_booking(db, existing_success.id)
+
+    confirmed, verified_last4, verified_brand = verify_card_payment_intent_succeeded(
+        payment_intent_id
+    )
+    if confirmed:
+        return upsert_success_transaction(
+            db=db,
+            booking=booking,
+            transaction_ref=transaction_ref,
+            payment_method=payment_method,
+            payment_intent_id=payment_intent_id,
+            card_last4=verified_last4 or card_last4,
+            card_brand=verified_brand or card_brand,
+        )
 
     return mark_transaction_processing(
         db=db,

@@ -39,6 +39,22 @@ def stripe_intent(intent_id: str, client_secret: str):
     return MagicMock(id=intent_id, client_secret=client_secret)
 
 
+def stripe_retrieved_intent(intent_id: str, status: str, last4: str = "4242", brand: str = "visa"):
+    return {
+        "id": intent_id,
+        "status": status,
+        "charges": {
+            "data": [
+                {
+                    "payment_method_details": {
+                        "card": {"last4": last4, "brand": brand}
+                    }
+                }
+            ]
+        },
+    }
+
+
 def admin_headers(client, db_session):
     admin = models.User(
         email="admin-payments@example.com",
@@ -131,24 +147,64 @@ def test_mock_payment_marks_booking_paid_immediately(client, create_booking, db_
     assert booking_row.status == models.BookingStatus.CONFIRMED
 
 
-def test_card_payment_success_marks_booking_processing_until_webhook(client, create_booking, db_session):
+def test_card_payment_success_finalizes_immediately_when_stripe_verification_succeeds(
+    client,
+    create_booking,
+    db_session,
+):
     booking = create_booking()
 
     with patch(
         "routers.payments.stripe.PaymentIntent.create",
         return_value=stripe_intent("pi_webhook_wait_001", "secret_wait_001"),
+    ), patch(
+        "routers.payments.stripe.PaymentIntent.retrieve",
+        return_value=stripe_retrieved_intent("pi_webhook_wait_001", "succeeded"),
     ):
         intent = client.post(
             "/payments/create-payment-intent",
             json={"booking_id": booking["id"], "payment_method": "card", "idempotency_key": "card-001"},
         )
+        ack = acknowledge_card_payment(
+            client,
+            booking["id"],
+            intent.json()["transaction_ref"],
+            intent.json()["payment_intent_id"],
+        )
 
-    ack = acknowledge_card_payment(
-        client,
-        booking["id"],
-        intent.json()["transaction_ref"],
-        intent.json()["payment_intent_id"],
-    )
+    booking_row = db_session.query(models.Booking).filter_by(id=booking["id"]).first()
+    db_session.refresh(booking_row)
+    assert intent.status_code == 200
+    assert ack.status_code == 200
+    assert ack.json()["status"] == "success"
+    assert booking_row.payment_status == models.PaymentStatus.PAID
+    assert booking_row.status == models.BookingStatus.CONFIRMED
+
+
+def test_card_payment_success_marks_booking_processing_until_webhook_when_verification_not_ready(
+    client,
+    create_booking,
+    db_session,
+):
+    booking = create_booking()
+
+    with patch(
+        "routers.payments.stripe.PaymentIntent.create",
+        return_value=stripe_intent("pi_processing_001", "secret_processing_001"),
+    ), patch(
+        "routers.payments.stripe.PaymentIntent.retrieve",
+        return_value=stripe_retrieved_intent("pi_processing_001", "processing"),
+    ):
+        intent = client.post(
+            "/payments/create-payment-intent",
+            json={"booking_id": booking["id"], "payment_method": "card", "idempotency_key": "card-verify-wait"},
+        )
+        ack = acknowledge_card_payment(
+            client,
+            booking["id"],
+            intent.json()["transaction_ref"],
+            intent.json()["payment_intent_id"],
+        )
 
     booking_row = db_session.query(models.Booking).filter_by(id=booking["id"]).first()
     db_session.refresh(booking_row)

@@ -250,6 +250,13 @@ def test_card_client_success_stays_processing_until_webhook(client, create_booki
     with patch(
         "routers.payments.stripe.PaymentIntent.create",
         return_value=stripe_intent("pi_processing_only", "secret_processing_only"),
+    ), patch(
+        "routers.payments.stripe.PaymentIntent.retrieve",
+        return_value={
+            "id": "pi_processing_only",
+            "status": "processing",
+            "charges": {"data": []},
+        },
     ):
         intent = client.post(
             "/payments/create-payment-intent",
