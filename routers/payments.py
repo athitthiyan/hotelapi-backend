@@ -967,6 +967,13 @@ def create_payment_intent(
             },
             receipt_email=booking.email,
             idempotency_key=idempotency_key,
+            payment_method_options={
+                "card": {
+                    # Request bank-side 3DS/OTP whenever supported. Stripe and the
+                    # issuer still own the actual challenge UX and final decision.
+                    "request_three_d_secure": "any",
+                }
+            },
         )
         transaction.stripe_payment_intent_id = intent.id
         transaction.provider_client_secret = intent.client_secret
@@ -1474,54 +1481,73 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
 
     if event["type"] == "payment_intent.succeeded":
         payment_intent = event["data"]["object"]
-        booking_id = int(payment_intent.get("metadata", {}).get("booking_id", 0))
-        if booking_id:
-            booking = get_booking_or_404(db, booking_id)
-            release_expired_holds(db, booking_id=booking.id)
-            db.refresh(booking)
-            last4, brand = get_card_details(payment_intent)
-            upsert_success_transaction(
-                db=db,
-                booking=booking,
-                transaction_ref=payment_intent.get("metadata", {}).get(
-                    "transaction_ref", "TXN-" + payment_intent["id"][-12:].upper()
-                ),
-                payment_method="card",
-                payment_intent_id=payment_intent["id"],
-                card_last4=last4,
-                card_brand=brand,
-            )
-            write_payment_audit(
-                db,
-                action="payment.webhook.succeeded",
-                booking=booking,
-                metadata={"payment_intent_id": payment_intent["id"]},
-            )
+        metadata = payment_intent.get("metadata", {})
+        booking_id_str = metadata.get("booking_id")
+        transaction_ref = metadata.get("transaction_ref")
 
-    if event["type"] == "payment_intent.payment_failed":
+        if not booking_id_str:
+            return {"status": "ok", "note": "no booking_id in metadata"}
+
+        booking = db.query(models.Booking).filter(
+            models.Booking.id == int(booking_id_str)
+        ).first()
+        if not booking or booking.payment_status == models.PaymentStatus.PAID:
+            return {"status": "ok", "note": "already processed"}
+
+        transaction: Optional[models.Transaction] = None
+        if transaction_ref:
+            transaction = db.query(models.Transaction).filter(
+                models.Transaction.transaction_ref == transaction_ref
+            ).first()
+        if not transaction:
+            transaction = get_latest_transaction_for_booking(db, booking.id)
+
+        if transaction and transaction.status != models.TransactionStatus.SUCCESS:
+            transaction.status = models.TransactionStatus.SUCCESS
+            last4, brand = get_card_details(payment_intent)
+            if last4:
+                transaction.card_last4 = last4
+            if brand:
+                transaction.card_brand = brand
+
+        booking.payment_status = models.PaymentStatus.PAID
+        booking.status = models.BookingStatus.CONFIRMED
+        confirm_inventory_for_booking(db, booking=booking)
+
+        if transaction:
+            if not _notification_exists(db, booking_id=booking.id, transaction_id=transaction.id, event_type="booking_confirmed"):
+                queue_booking_confirmation_email(db, booking, transaction)
+            if not _notification_exists(db, booking_id=booking.id, transaction_id=transaction.id, event_type="payment_receipt"):
+                queue_payment_receipt_email(db, booking, transaction)
+
+        db.commit()
+        write_payment_audit(db, booking_id=booking.id, action="webhook_confirmed",
+                            actor_id=None, notes=f"Stripe webhook confirmed payment_intent {payment_intent.get('id')}")
+
+    elif event["type"] == "payment_intent.payment_failed":
         payment_intent = event["data"]["object"]
-        booking_id = int(payment_intent.get("metadata", {}).get("booking_id", 0))
-        reason = (
-            payment_intent.get("last_payment_error", {}) or {}
-        ).get("message", "Payment declined")
-        if booking_id:
-            booking = get_booking_or_404(db, booking_id)
-            if booking.payment_status != models.PaymentStatus.PAID:
-                record_failed_transaction(
-                    db=db,
-                    booking=booking,
-                    reason=reason,
-                    payment_intent_id=payment_intent["id"],
-                    transaction_ref=payment_intent.get("metadata", {}).get("transaction_ref"),
-                )
-                write_payment_audit(
-                    db,
-                    action="payment.webhook.failed",
-                    booking=booking,
-                    metadata={
-                        "payment_intent_id": payment_intent["id"],
-                        "reason": reason,
-                    },
-                )
+        metadata = payment_intent.get("metadata", {})
+        booking_id_str = metadata.get("booking_id")
+        transaction_ref = metadata.get("transaction_ref")
+
+        if booking_id_str:
+            booking = db.query(models.Booking).filter(
+                models.Booking.id == int(booking_id_str)
+            ).first()
+            if booking and booking.payment_status not in (
+                models.PaymentStatus.PAID, models.PaymentStatus.FAILED
+            ):
+                transaction = None
+                if transaction_ref:
+                    transaction = db.query(models.Transaction).filter(
+                        models.Transaction.transaction_ref == transaction_ref
+                    ).first()
+                if transaction and transaction.status == models.TransactionStatus.PENDING:
+                    err = payment_intent.get("last_payment_error", {})
+                    transaction.status = models.TransactionStatus.FAILED
+                    transaction.failure_reason = err.get("message", "Payment failed")
+                    booking.payment_status = models.PaymentStatus.FAILED
+                    queue_payment_failure_email(db, booking, transaction)
+                    db.commit()
 
     return {"status": "ok"}

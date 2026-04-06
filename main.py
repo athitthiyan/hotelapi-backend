@@ -10,7 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 import models
 from database import Base, SessionLocal, engine, settings, validate_runtime_configuration
-from routers import analytics, auth, bookings, notifications, ops, partner, payments, reviews, rooms, wishlist
+from routers import analytics, auth, bookings, notifications, ops, partner, payments, razorpay_payments, reviews, rooms, wishlist
 
 try:
     from apscheduler.schedulers.background import BackgroundScheduler
@@ -116,6 +116,7 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.include_router(rooms.router)
 app.include_router(bookings.router)
 app.include_router(payments.router)
+app.include_router(razorpay_payments.router)
 app.include_router(analytics.router)
 app.include_router(auth.router)
 app.include_router(partner.router)

@@ -312,6 +312,9 @@ class TestMainCoverageEdges:
 class TestAuthCoverageEdges:
     def test_update_profile_sets_optional_fields(self, db_session):
         user = make_user(db_session, email="profile-edge@example.com")
+        user.phone = "+91 9000000000"
+        user.phone_verified = True
+        db_session.commit()
 
         updated = auth.update_profile(
             schemas.UserProfileUpdate(
@@ -1707,5 +1710,4 @@ class TestInventoryCoverageEdges:
         with inventory_service.inventory_lock_scope(fake_db, room_id=77):
             assert True
 
-        assert inventory_service.release_expired_inventory_locks(fake_db) == 0
-        assert fake_db.committed is False
+        assert inven

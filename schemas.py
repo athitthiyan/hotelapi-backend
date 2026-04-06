@@ -108,6 +108,9 @@ class RoomBase(BaseModel):
     size_sqft: Optional[int] = None
     floor: Optional[int] = None
     is_featured: bool = False
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    map_embed_url: Optional[str] = None
 
 
 class RoomCreate(RoomBase):
@@ -135,6 +138,9 @@ class RoomUpdate(BaseModel):
     size_sqft: Optional[int] = None
     floor: Optional[int] = None
     is_featured: Optional[bool] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    map_embed_url: Optional[str] = None
 
 
 class RoomResponse(RoomBase):
@@ -460,6 +466,9 @@ class UserResponse(BaseModel):
     id: int
     email: EmailStr
     full_name: str
+    phone: Optional[str] = None
+    phone_verified: bool = False
+    is_email_verified: bool = False
     is_admin: bool
     is_partner: bool
     is_active: bool
@@ -881,11 +890,36 @@ class UserProfileUpdate(BaseModel):
         return cleaned
 
 
+class PhoneOtpRequest(BaseModel):
+    phone: str = Field(min_length=7, max_length=30)
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not re.fullmatch(r"[0-9+\-\s()]{7,30}", cleaned):
+            raise ValueError("Phone number format is invalid")
+        return cleaned
+
+
+class PhoneOtpVerifyRequest(PhoneOtpRequest):
+    otp: str = Field(min_length=6, max_length=6, pattern=r"^[0-9]{6}$")
+
+
+class PhoneOtpResponse(BaseModel):
+    message: str
+    phone: str
+    expires_in_seconds: int
+    dev_code: Optional[str] = None
+
+
 class UserDetailResponse(BaseModel):
     id: int
     email: EmailStr
     full_name: str
     phone: Optional[str] = None
+    phone_verified: bool = False
+    pending_phone: Optional[str] = None
     avatar_url: Optional[str] = None
     is_admin: bool
     is_active: bool
@@ -1019,33 +1053,32 @@ class WishlistItemResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class WishlistResponse(BaseModel):
-    items: List[WishlistItemResponse]
-    total: int
+# ─── Razorpay Schemas ─────────────────────────────────────────────────────────
+
+class RazorpayOrderRequest(BaseModel):
+    booking_id: int
+    payment_method: str  # upi, gpay, phonepe, card, netbanking, wallet, mock
+    idempotency_key: Optional[str] = None
 
 
-class WishlistStatusResponse(BaseModel):
-    room_ids: List[int]
+class RazorpayOrderResponse(BaseModel):
+    order_id: str
+    transaction_ref: str
+    amount_paise: int
+    currency: str
+    key_id: str
+    idempotent: bool = False
 
 
-# ─── Availability Calendar ────────────────────────────────────────────────────
-
-class AvailabilityDay(BaseModel):
-    date: str  # ISO date string YYYY-MM-DD
-    available: bool
-    price: Optional[float] = None
-
-
-class AvailabilityCalendarResponse(BaseModel):
-    room_id: int
-    calendar: List[AvailabilityDay]
+class RazorpayVerifyRequest(BaseModel):
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+    transaction_ref: str
 
 
-# ─── My Bookings ─────────────────────────────────────────────────────────────
-
-class MyBookingsResponse(BaseModel):
-    bookings: List[BookingResponse]
-    total: int
-    upcoming: int
-    past: int
-    cancelled: int
+class RazorpayVerifyResponse(BaseModel):
+    status: str
+    transaction_ref: str
+    razorpay_payment_id: str
+    booking_status: Optional[str] = None

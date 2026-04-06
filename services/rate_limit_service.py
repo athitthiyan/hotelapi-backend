@@ -8,6 +8,7 @@ RATE_LIMITS = {
     "auth:signup": (5, timedelta(minutes=10)),
     "auth:login": (8, timedelta(minutes=10)),
     "auth:forgot-password": (5, timedelta(minutes=15)),
+    "auth:phone-otp": (5, timedelta(minutes=10)),
     "partner:register": (5, timedelta(minutes=10)),
     "partner:login": (8, timedelta(minutes=10)),
     "payments:create-intent": (10, timedelta(minutes=10)),
@@ -51,4 +52,5 @@ def enforce_rate_limit(
 
 
 def reset_rate_limits() -> None:
+    """Clear all in-memory rate limit logs. Used in tests."""
     _REQUEST_LOG.clear()

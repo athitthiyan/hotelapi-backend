@@ -17,5 +17,4 @@ test_bootstrap.db
 reports/production_smoke_report.md
 reports/production_parity_report.md
 
-# Alembic - track migration files in git so Railway/CI can run them
-# alembic/versions/  ← removed; migration .py files must be version-controlled
+# Alembic - track migration 

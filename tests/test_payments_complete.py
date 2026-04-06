@@ -401,13 +401,16 @@ class TestCreatePaymentIntent:
         mock_intent.id = "pi_test_001"
         mock_intent.client_secret = "pi_test_001_secret_xxx"
 
-        with patch("routers.payments.stripe.PaymentIntent.create", return_value=mock_intent):
+        with patch("routers.payments.stripe.PaymentIntent.create", return_value=mock_intent) as create_intent:
             r = client.post(
                 "/payments/create-payment-intent",
                 json={"booking_id": booking_id, "payment_method": "card"},
             )
         assert r.status_code == 200
         assert r.json()["mode"] == "stripe"
+        assert create_intent.call_args.kwargs["payment_method_options"] == {
+            "card": {"request_three_d_secure": "any"}
+        }
 
     def test_stripe_error_returns_400(self, client, room_id):
         booking_r = quick_booking(client, room_id)
@@ -927,3 +930,4 @@ class TestStripeWebhook:
         with patch("routers.payments.stripe.Webhook.construct_event", return_value=event):
             r = client.post("/payments/webhook", content=b"body", headers={"stripe-signature": "sig"})
         assert r.status_code == 200
+        assert r.json()["status"] == "ok"

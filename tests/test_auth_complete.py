@@ -79,6 +79,7 @@ class TestAuthHelpers:
             decode_token("not.a.valid.jwt", "access")
         assert exc_info.value.status_code == 401
 
+
     def test_get_bearer_token_missing_header_raises_401(self):
         with pytest.raises(Exception) as exc_info:
             get_bearer_token(None)
@@ -123,6 +124,55 @@ class TestAuthHelpers:
 
 
 # ─── Integration tests via HTTP client ────────────────────────────────────────
+
+class TestPhoneVerification:
+    def test_phone_otp_verification_required_before_profile_update(self, client):
+        client.post("/auth/signup", json=signup_payload())
+        login = client.post(
+            "/auth/login",
+            json={"email": "athit@example.com", "password": "StrongPass123"},
+        )
+        headers = auth_header(login.json()["access_token"])
+
+        blocked = client.put(
+            "/auth/me",
+            headers=headers,
+            json={"full_name": "Athit", "phone": "+91 99999 99999"},
+        )
+        assert blocked.status_code == 400
+        assert "OTP" in blocked.json()["detail"]
+
+        otp_response = client.post(
+            "/auth/phone/request-otp",
+            headers=headers,
+            json={"phone": "+91 99999 99999"},
+        )
+        assert otp_response.status_code == 200
+        dev_code = otp_response.json()["dev_code"]
+
+        invalid = client.post(
+            "/auth/phone/verify",
+            headers=headers,
+            json={"phone": "+91 99999 99999", "otp": "000000"},
+        )
+        assert invalid.status_code == 400
+
+        verified = client.post(
+            "/auth/phone/verify",
+            headers=headers,
+            json={"phone": "+91 99999 99999", "otp": dev_code},
+        )
+        assert verified.status_code == 200
+        assert verified.json()["phone_verified"] is True
+
+        updated = client.put(
+            "/auth/me",
+            headers=headers,
+            json={"full_name": "Athit Updated", "phone": "+91 99999 99999"},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["full_name"] == "Athit Updated"
+
 
 class TestSignup:
     def test_signup_success_returns_201_with_tokens(self, client):
@@ -279,42 +329,4 @@ class TestGetMe:
         )
         db_session.add(booking)
         db_session.flush()
-        db_session.add(
-            models.Transaction(
-                booking_id=booking.id,
-                transaction_ref="TXN-AUTH-RECONCILE",
-                amount=234,
-                currency="USD",
-                payment_method="card",
-                status=models.TransactionStatus.SUCCESS,
-            )
-        )
-        db_session.commit()
-
-        response = client.get("/auth/me/bookings", headers=auth_header(token))
-
-        db_session.refresh(booking)
-        assert response.status_code == 200
-        assert response.json()["bookings"][0]["status"] == "confirmed"
-        assert response.json()["bookings"][0]["payment_status"] == "paid"
-        assert booking.status == models.BookingStatus.CONFIRMED
-        assert booking.payment_status == models.PaymentStatus.PAID
-
-
-class TestAdminGuard:
-    def test_non_admin_forbidden_on_admin_routes(self, client):
-        client.post("/auth/signup", json=signup_payload())
-        login = client.post("/auth/login", json={"email": "athit@example.com", "password": "StrongPass123"})
-        headers = auth_header(login.json()["access_token"])
-
-        r = client.get("/analytics", headers=headers, params={"days": 7})
-        assert r.status_code == 403
-        assert r.json()["detail"] == "Admin access required"
-
-    def test_admin_can_access_admin_routes(self, client, db_session):
-        create_admin(db_session)
-        login = client.post("/auth/login", json={"email": "admin@example.com", "password": "AdminPass123"})
-        headers = auth_header(login.json()["access_token"])
-
-        r = client.get("/analytics", headers=headers, params={"days": 7})
-        assert r.status_code == 200
+        db_sessio

@@ -1,5 +1,7 @@
 import logging
+import os
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -58,11 +60,14 @@ class Settings(BaseSettings):
         default=(
             "http://localhost:4200,http://localhost:4201,"
             "http://localhost:4202,http://localhost:4203,"
+            "http://127.0.0.1:4200,http://127.0.0.1:4201,"
+            "http://127.0.0.1:4202,http://127.0.0.1:4203,"
             "https://stayvora.co.in,https://www.stayvora.co.in,"
             "https://stayease-booking-app.vercel.app,"
             "https://stayease-booking-app-git-main-athitthiyans-projects.vercel.app,"
             "https://payflow-payment-app.vercel.app,"
             "https://insightboard-admin.vercel.app,"
+            "https://partner-portal.vercel.app,"
             "https://stayease-partner-portal.vercel.app"
         ),
         validation_alias=AliasChoices("ALLOWED_ORIGINS", "allowed_origins"),
@@ -126,6 +131,38 @@ class Settings(BaseSettings):
         default="Stayvora",
         validation_alias=AliasChoices("EMAIL_FROM_NAME", "email_from_name"),
     )
+    # ── Razorpay ──────────────────────────────────────────────────────────────
+    razorpay_key_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("RAZORPAY_KEY_ID", "razorpay_key_id"),
+    )
+    razorpay_key_secret: str = Field(
+        default="",
+        validation_alias=AliasChoices("RAZORPAY_KEY_SECRET", "razorpay_key_secret"),
+    )
+    razorpay_webhook_secret: str = Field(
+        default="",
+        validation_alias=AliasChoices("RAZORPAY_WEBHOOK_SECRET", "razorpay_webhook_secret"),
+    )
+    # ── Google Maps ───────────────────────────────────────────────────────────
+    google_maps_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("GOOGLE_MAPS_API_KEY", "google_maps_api_key"),
+    )
+    # ── Apple Sign-In ─────────────────────────────────────────────────────────
+    apple_client_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("APPLE_CLIENT_ID", "apple_client_id"),
+    )
+    # ── Microsoft Azure AD SSO ────────────────────────────────────────────────
+    microsoft_tenant_id: str = Field(
+        default="common",
+        validation_alias=AliasChoices("MICROSOFT_TENANT_ID", "microsoft_tenant_id"),
+    )
+    microsoft_client_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("MICROSOFT_CLIENT_ID", "microsoft_client_id"),
+    )
 
     @field_validator("database_url")
     @classmethod
@@ -135,9 +172,24 @@ class Settings(BaseSettings):
         return value
 
 
+def select_settings_env_file() -> str:
+    """Select the safest env file for the current runtime."""
+    explicit_env_file = os.getenv("STAYVORA_ENV_FILE") or os.getenv("ENV_FILE")
+    if explicit_env_file:
+        return explicit_env_file
+
+    if os.getenv("APP_ENV", "").lower() == "production" and Path(".env.prod").exists():
+        return ".env.prod"
+
+    if Path(".env.local").exists():
+        return ".env.local"
+
+    return ".env"
+
+
 @lru_cache()
 def get_settings() -> Settings:
-    return Settings()
+    return Settings(_env_file=select_settings_env_file())
 
 
 def validate_runtime_configuration(config: Settings) -> None:
@@ -185,28 +237,4 @@ def _build_engine(database_url: str):
         return eng
 
     # PostgreSQL / Supabase pgbouncer
-    return create_engine(
-        database_url,
-        pool_pre_ping=True,
-        pool_size=3,        # pgbouncer transaction mode — keep tiny
-        max_overflow=7,     # burst headroom
-        pool_timeout=15,    # fail fast instead of blocking
-        pool_recycle=300,   # recycle connections every 5 min
-        connect_args={
-            "connect_timeout": 10,
-            "application_name": "stayvora-api",
-        },
-    )
-
-
-engine = _build_engine(settings.database_url)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    r

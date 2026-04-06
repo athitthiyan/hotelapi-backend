@@ -93,8 +93,18 @@ class User(Base):
     full_name = Column(String(100), nullable=False)
     hashed_password = Column(String(255), nullable=True)  # nullable for social-only accounts
     phone = Column(String(30))
+    phone_verified = Column(Boolean, default=False, nullable=False)
+    pending_phone = Column(String(30))
+    phone_otp_hash = Column(String(64))
+    phone_otp_expires_at = Column(DateTime(timezone=True))
+    phone_otp_attempts = Column(Integer, default=0, nullable=False)
     avatar_url = Column(String(500))
     google_id = Column(String(128), unique=True, index=True)
+    apple_id = Column(String(128), unique=True, index=True)
+    microsoft_id = Column(String(128), unique=True, index=True)
+    is_email_verified = Column(Boolean, default=False, nullable=False)
+    email_verification_token = Column(String(128))
+    email_verification_expires_at = Column(DateTime(timezone=True))
     is_admin = Column(Boolean, default=False, nullable=False)
     is_partner = Column(Boolean, default=False, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
@@ -175,6 +185,9 @@ class Room(Base):
     location = Column(String(200))
     city = Column(String(100))
     country = Column(String(100))
+    latitude = Column(Float)
+    longitude = Column(Float)
+    map_embed_url = Column(Text)
     max_guests = Column(Integer, default=2)
     beds = Column(Integer, default=1)
     bathrooms = Column(Integer, default=1)
@@ -257,11 +270,15 @@ class Transaction(Base):
     booking_id = Column(Integer, ForeignKey("bookings.id"), nullable=False)
     transaction_ref = Column(String(100), unique=True, index=True)
     stripe_payment_intent_id = Column(String(200), index=True)
+    razorpay_order_id = Column(String(100), index=True)
+    razorpay_payment_id = Column(String(100))
+    razorpay_signature = Column(String(256))
+    gateway = Column(String(30), default="stripe")  # stripe, razorpay
     idempotency_key = Column(String(100), unique=True, index=True)
     provider_client_secret = Column(Text)
     amount = Column(Float, nullable=False)
-    currency = Column(String(10), default="USD")
-    payment_method = Column(String(50))  # card, mock
+    currency = Column(String(10), default="INR")
+    payment_method = Column(String(50))  # card, mock, upi, razorpay, gpay, phonepay
     card_last4 = Column(String(4))
     card_brand = Column(String(20))
     retry_of_transaction_id = Column(Integer, ForeignKey("transactions.id"))
@@ -428,9 +445,4 @@ class PasswordResetToken(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    token_hash = Column(String(64), unique=True, nullable=False, index=True)
-    expires_at = Column(DateTime(timezone=True), nullable=False)
-    used_at = Column(DateTime(timezone=True))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-    user = relationship("User")
+    token_hash = Column

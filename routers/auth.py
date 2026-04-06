@@ -32,8 +32,18 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def ensure_aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def normalize_email(email: str) -> str:
     return email.strip().lower()
+
+
+def normalize_phone(phone: str) -> str:
+    return " ".join(phone.strip().split())
 
 
 def hash_password(password: str) -> str:
@@ -79,6 +89,18 @@ def build_token_response(user: models.User) -> schemas.TokenResponse:
         refresh_token=refresh_token,
         user=user,
     )
+
+
+def hash_phone_otp(phone: str, otp: str) -> str:
+    raw = f"{normalize_phone(phone)}:{otp}:{settings.secret_key}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def clear_phone_otp(user: models.User) -> None:
+    user.pending_phone = None
+    user.phone_otp_hash = None
+    user.phone_otp_expires_at = None
+    user.phone_otp_attempts = 0
 
 
 def decode_token(token: str, expected_type: str) -> dict:
@@ -210,6 +232,67 @@ def read_me(user: models.User = Depends(get_current_user)):
 
 # ─── Profile ──────────────────────────────────────────────────────────────────
 
+@router.post("/phone/request-otp", response_model=schemas.PhoneOtpResponse)
+def request_phone_otp(
+    payload: schemas.PhoneOtpRequest,
+    request: Request,
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    phone = normalize_phone(payload.phone)
+    enforce_rate_limit("auth:phone-otp", request, subject=f"{user.id}:{phone}")
+    otp = f"{secrets.randbelow(1_000_000):06d}"
+    user.pending_phone = phone
+    user.phone_otp_hash = hash_phone_otp(phone, otp)
+    user.phone_otp_expires_at = utc_now() + timedelta(minutes=5)
+    user.phone_otp_attempts = 0
+    if user.phone != phone:
+        user.phone_verified = False
+    db.commit()
+
+    response = schemas.PhoneOtpResponse(
+        message="Verification code sent to your phone.",
+        phone=phone,
+        expires_in_seconds=300,
+    )
+    if settings.app_env.lower() != "production":
+        response.dev_code = otp
+    return response
+
+
+@router.post("/phone/verify", response_model=schemas.UserDetailResponse)
+def verify_phone_otp(
+    payload: schemas.PhoneOtpVerifyRequest,
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    phone = normalize_phone(payload.phone)
+    now = utc_now()
+    if (
+        not user.pending_phone
+        or user.pending_phone != phone
+        or not user.phone_otp_hash
+        or not user.phone_otp_expires_at
+        or ensure_aware_utc(user.phone_otp_expires_at) < now
+    ):
+        clear_phone_otp(user)
+        db.commit()
+        raise HTTPException(status_code=400, detail="Phone verification code expired")
+    if user.phone_otp_attempts >= 5:
+        raise HTTPException(status_code=429, detail="Too many phone verification attempts")
+    if not secrets.compare_digest(user.phone_otp_hash, hash_phone_otp(phone, payload.otp)):
+        user.phone_otp_attempts += 1
+        db.commit()
+        raise HTTPException(status_code=400, detail="Invalid phone verification code")
+
+    user.phone = phone
+    user.phone_verified = True
+    clear_phone_otp(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
 @router.put("/me", response_model=schemas.UserDetailResponse)
 def update_profile(
     payload: schemas.UserProfileUpdate,
@@ -219,7 +302,15 @@ def update_profile(
     if payload.full_name is not None:
         user.full_name = payload.full_name
     if payload.phone is not None:
-        user.phone = payload.phone
+        phone = normalize_phone(payload.phone)
+        if not phone:
+            raise HTTPException(status_code=400, detail="Phone number is required")
+        if user.phone != phone or not user.phone_verified:
+            raise HTTPException(
+                status_code=400,
+                detail="Verify this phone number with OTP first",
+            )
+        user.phone = phone
     if payload.avatar_url is not None:
         user.avatar_url = payload.avatar_url
     db.commit()
@@ -309,9 +400,71 @@ def reset_password(
     return schemas.MessageResponse(message="Password has been reset successfully")
 
 
-# ─── Social Login (Google) ────────────────────────────────────────────────────
+# ─── Social Login ─────────────────────────────────────────────────────────────
 
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
+APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
+MICROSOFT_JWKS_URL = "https://login.microsoftonline.com/common/discovery/v2.0/keys"
+
+
+async def _verify_google_token(id_token: str) -> dict:
+    async with _httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            GOOGLE_USERINFO_URL,
+            headers={"Authorization": f"Bearer {id_token}"},
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=401, detail="Google token verification failed")
+    data = resp.json()
+    if not data.get("email"):
+        raise HTTPException(status_code=401, detail="Google token missing email")
+    return {
+        "provider_id": data.get("sub", ""),
+        "email": data.get("email", ""),
+        "full_name": data.get("name", data.get("email", "").split("@")[0]),
+        "avatar_url": data.get("picture"),
+        "email_verified": data.get("email_verified", False),
+    }
+
+
+async def _verify_jwks_token(id_token: str, jwks_url: str, audience: str | None) -> dict:
+    """Verify a JWT signed by a JWKS-backed provider (Apple, Microsoft)."""
+    try:
+        from jose import jwt as jose_jwt, jwk
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="jose not installed") from exc
+    async with _httpx.AsyncClient(timeout=10) as client:
+        try:
+            resp = await client.get(jwks_url)
+        except _httpx.RequestError as exc:
+            raise HTTPException(status_code=502, detail="Failed to fetch provider JWKS") from exc
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail="Provider JWKS endpoint unavailable")
+    jwks = resp.json()
+    try:
+        options = {"verify_aud": audience is not None}
+        claims = jose_jwt.decode(
+            id_token,
+            jwks,
+            algorithms=["RS256"],
+            audience=audience,
+            options=options,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=f"Token verification failed: {exc}") from exc
+    email = claims.get("email", "")
+    sub = claims.get("sub", "")
+    if not sub:
+        raise HTTPException(status_code=401, detail="Token missing subject claim")
+    name_parts = [claims.get("given_name", ""), claims.get("family_name", "")]
+    full_name = " ".join(p for p in name_parts if p) or claims.get("name") or email.split("@")[0]
+    return {
+        "provider_id": sub,
+        "email": email,
+        "full_name": full_name,
+        "avatar_url": claims.get("picture"),
+        "email_verified": claims.get("email_verified", True),  # Apple always verified
+    }
 
 
 @router.post("/social-login", response_model=schemas.TokenResponse)
@@ -319,101 +472,127 @@ async def social_login(
     payload: schemas.SocialLoginRequest,
     db: Session = Depends(get_db),
 ):
-    if payload.provider != "google":
-        raise HTTPException(status_code=400, detail="Only 'google' provider is supported")
-    async with _httpx.AsyncClient(timeout=10) as client:
-        try:
-            resp = await client.get(
-                GOOGLE_USERINFO_URL,
-                headers={"Authorization": f"Bearer {payload.id_token}"},
-            )
-        except _httpx.RequestError as exc:
-            raise HTTPException(status_code=502, detail="Failed to verify Google token") from exc
-    if resp.status_code != 200:
-        raise HTTPException(status_code=401, detail="Google token verification failed")
-    google_data = resp.json()
-    google_id: str = google_data.get("sub", "")
-    email: str = google_data.get("email", "")
-    full_name: str = google_data.get("name", email.split("@")[0])
-    avatar_url: str | None = google_data.get("picture")
-    if not google_id or not email:
-        raise HTTPException(status_code=400, detail="Insufficient data from Google")
-    normalized_email = normalize_email(email)
-    # Find or create user
-    user = db.query(models.User).filter(models.User.google_id == google_id).first()
+    if payload.provider not in ("google", "apple", "microsoft"):
+        raise HTTPException(status_code=400, detail="Unsupported provider. Use: google, apple, microsoft")
+
+    if payload.provider == "google":
+        provider_data = await _verify_google_token(payload.id_token)
+        id_field = "google_id"
+    elif payload.provider == "apple":
+        provider_data = await _verify_jwks_token(
+            payload.id_token,
+            APPLE_JWKS_URL,
+            audience=settings.apple_client_id or None,
+        )
+        id_field = "apple_id"
+    else:  # microsoft
+        provider_data = await _verify_jwks_token(
+            payload.id_token,
+            MICROSOFT_JWKS_URL.replace("common", settings.microsoft_tenant_id),
+            audience=settings.microsoft_client_id or None,
+        )
+        id_field = "microsoft_id"
+
+    provider_id: str = provider_data["provider_id"]
+    email: str = provider_data["email"]
+    full_name: str = provider_data["full_name"]
+    avatar_url: str | None = provider_data["avatar_url"]
+    email_verified: bool = provider_data["email_verified"]
+
+    if not email:
+        raise HTTPException(status_code=401, detail="Provider did not return an email address")
+
+    # Look up user by provider ID first, then by email
+    user = db.query(models.User).filter(
+        getattr(models.User, id_field) == provider_id
+    ).first()
     if not user:
-        user = db.query(models.User).filter(models.User.email == normalized_email).first()
-        if user:
-            user.google_id = google_id
-            if avatar_url and not user.avatar_url:
-                user.avatar_url = avatar_url
-        else:
-            user = models.User(
-                email=normalized_email,
-                full_name=full_name,
-                google_id=google_id,
-                avatar_url=avatar_url,
-                hashed_password=None,
-                is_admin=False,
-                is_partner=False,
-                is_active=True,
-            )
-            db.add(user)
+        user = db.query(models.User).filter(
+            models.User.email == normalize_email(email)
+        ).first()
+
+    if user:
+        # Update provider ID and avatar if missing
+        if not getattr(user, id_field):
+            setattr(user, id_field, provider_id)
+        if avatar_url and not user.avatar_url:
+            user.avatar_url = avatar_url
+        if email_verified and not user.is_email_verified:
+            user.is_email_verified = True
+        if not user.is_active:
+            raise HTTPException(status_code=403, detail="Account is deactivated")
+        db.commit()
+    else:
+        user = models.User(
+            email=normalize_email(email),
+            full_name=full_name,
+            avatar_url=avatar_url,
+            is_email_verified=email_verified,
+            is_active=True,
+        )
+        setattr(user, id_field, provider_id)
+        db.add(user)
         db.commit()
         db.refresh(user)
-    if not user.is_active:
-        raise HTTPException(status_code=403, detail="User account is inactive")
-    return build_token_response(user)
+
+    access_token = create_access_token(
+        data={"sub": str(user.id)},
+        expires_delta=timedelta(minutes=settings.access_token_exp_minutes),
+    )
+    refresh_token = create_refresh_token(str(user.id))
+    db.commit()
+    return schemas.TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+        user=schemas.UserResponse.model_validate(user),
+    )
 
 
-# ─── My Bookings ──────────────────────────────────────────────────────────────
+# ─── Email Verification ───────────────────────────────────────────────────────
 
-@router.get("/me/bookings", response_model=schemas.MyBookingsResponse)
-def my_bookings(
-    user: models.User = Depends(get_current_user),
+@router.post("/send-verification-email", response_model=schemas.MessageResponse)
+async def send_verification_email(
+    current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    from sqlalchemy.orm import joinedload
-    bookings = (
-        db.query(models.Booking)
-        .options(joinedload(models.Booking.room))
-        .filter(
-            or_(
-                models.Booking.user_id == user.id,
-                models.Booking.email == user.email,
-            )
-        )
-        .order_by(models.Booking.created_at.desc())
-        .all()
+    if current_user.is_email_verified:
+        return schemas.MessageResponse(message="Email is already verified")
+
+    token = secrets.token_urlsafe(32)
+    current_user.email_verification_token = token
+    current_user.email_verification_expires_at = utc_now() + timedelta(hours=24)
+    db.commit()
+
+    from services.notification_service import enqueue_notification
+    enqueue_notification(
+        db,
+        user_id=current_user.id,
+        event_type="email_verification",
+        recipient_email=current_user.email,
+        subject="Verify your Stayvora email address",
+        body=(
+            f"Hi {current_user.full_name},\n\n"
+            f"Please verify your email by clicking the link below:\n\n"
+            f"https://stayvora.co.in/verify-email?token={token}\n\n"
+            f"This link expires in 24 hours.\n\n"
+            f"— The Stayvora Team"
+        ),
     )
-    if reconcile_bookings_payment_states(db, bookings):
-        db.commit()
-        for booking in bookings:
-            db.refresh(booking)
-    attach_bookings_lifecycle_state(db, bookings)
-    from datetime import timezone as _tz
-    now = datetime.now(_tz.utc)
-    upcoming = sum(
-        1 for b in bookings
-        if b.status == models.BookingStatus.CONFIRMED
-        and b.check_out.replace(tzinfo=_tz.utc if b.check_out.tzinfo is None else b.check_out.tzinfo) >= now
-    )
-    past = sum(
-        1 for b in bookings
-        if b.status == models.BookingStatus.COMPLETED
-        or (
-            b.status == models.BookingStatus.CONFIRMED
-            and b.check_out.replace(tzinfo=_tz.utc if b.check_out.tzinfo is None else b.check_out.tzinfo) < now
-        )
-    )
-    cancelled = sum(
-        1 for b in bookings
-        if b.status in (models.BookingStatus.CANCELLED, models.BookingStatus.EXPIRED)
-    )
-    return schemas.MyBookingsResponse(
-        bookings=bookings,
-        total=len(bookings),
-        upcoming=upcoming,
-        past=past,
-        cancelled=cancelled,
-    )
+    return schemas.MessageResponse(message="Verification email sent")
+
+
+@router.get("/verify-email", response_model=schemas.MessageResponse)
+def verify_email(token: str, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(
+        models.User.email_verification_token == token
+    ).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired verification token")
+    if user.email_verification_expires_at and user.email_verification_expires_at < utc_now():
+        raise HTTPException(status_code=400, detail="Verification token has expired. Request a new one.")
+    user.is_email_verified = True
+    user.email_verification_token = None
+    user.email_verification_expires_at = None
+    db.commit()
+    return schemas.MessageResponse(message="Email verified successfully")
