@@ -237,4 +237,23 @@ def _build_engine(database_url: str):
         return eng
 
     # PostgreSQL / Supabase pgbouncer
-    r
+    return create_engine(
+        database_url,
+        pool_size=3,
+        max_overflow=7,
+        pool_pre_ping=True,
+        pool_recycle=300,
+    )
+
+
+engine = _build_engine(settings.database_url)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
