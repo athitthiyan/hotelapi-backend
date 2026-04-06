@@ -270,4 +270,5 @@ def reconcile_bookings_payment_states(db: Session, bookings: list[models.Booking
     changed = False
     for booking in bookings:
         changed = reconcile_gateway_payment_state(db, booking) or changed
-        changed = r
+        changed = reconcile_booking_payment_state(db, booking) or changed
+    return changed

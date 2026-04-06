@@ -27,4 +27,16 @@ disable =
     too-many-positional-arguments,
     useless-return,
     wrong-import-order,
-    wrong-import-pos
+    wrong-import-position,
+    broad-exception-caught,
+    condition-evals-to-constant,
+    protected-access,
+    too-many-statements,
+    unused-argument,
+    use-dict-literal
+
+[FORMAT]
+max-line-length = 120
+
+[REPORTS]
+score = no

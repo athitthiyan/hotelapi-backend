@@ -859,4 +859,18 @@ def test_invoice_and_voucher_download_for_booking_owner(client, db_session, room
     assert b"Stayvora Tax Invoice" in invoice.content
     assert created["booking_ref"].encode() in invoice.content
     assert voucher.status_code == 200
-    assert vouch
+    assert voucher.headers["content-type"].startswith("application/pdf")
+    assert b"Stayvora Booking Voucher" in voucher.content
+
+
+def test_invoice_document_requires_access_or_matching_reference(client, db_session, room_id):
+    created = client.post("/bookings", json=booking_payload(room_id)).json()
+
+    forbidden = client.get(f"/bookings/{created['id']}/invoice")
+    by_reference = client.get(
+        f"/bookings/{created['id']}/invoice",
+        params={"booking_ref": created["booking_ref"]},
+    )
+
+    assert forbidden.status_code == 403
+    assert by_reference.status_code == 200
