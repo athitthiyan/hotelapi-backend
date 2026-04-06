@@ -1,9 +1,12 @@
+import logging
 from functools import lru_cache
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import declarative_base, sessionmaker
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -14,7 +17,8 @@ class Settings(BaseSettings):
     )
 
     database_url: str = Field(
-        validation_alias=AliasChoices("DATABASE_URL", "database_url")
+        default="sqlite:///./stayvora_dev.db",
+        validation_alias=AliasChoices("DATABASE_URL", "database_url"),
     )
     supabase_url: str = Field(
         default="",
@@ -46,10 +50,21 @@ class Settings(BaseSettings):
     )
     app_env: str = Field(
         default="development",
-        validation_alias=AliasChoices("APP_ENV", "app_env", "ENVIRONMENT", "environment"),
+        validation_alias=AliasChoices(
+            "APP_ENV", "app_env", "ENVIRONMENT", "environment"
+        ),
     )
     allowed_origins: str = Field(
-        default="http://localhost:4200,http://localhost:4201,http://localhost:4202,http://localhost:4203,https://stayvora.co.in,https://www.stayvora.co.in,https://stayease-booking-app.vercel.app,https://stayease-booking-app-git-main-athitthiyans-projects.vercel.app,https://payflow-payment-app.vercel.app,https://insightboard-admin.vercel.app,https://stayease-partner-portal.vercel.app",
+        default=(
+            "http://localhost:4200,http://localhost:4201,"
+            "http://localhost:4202,http://localhost:4203,"
+            "https://stayvora.co.in,https://www.stayvora.co.in,"
+            "https://stayease-booking-app.vercel.app,"
+            "https://stayease-booking-app-git-main-athitthiyans-projects.vercel.app,"
+            "https://payflow-payment-app.vercel.app,"
+            "https://insightboard-admin.vercel.app,"
+            "https://stayease-partner-portal.vercel.app"
+        ),
         validation_alias=AliasChoices("ALLOWED_ORIGINS", "allowed_origins"),
     )
     access_token_exp_minutes: int = Field(
@@ -90,11 +105,26 @@ class Settings(BaseSettings):
     )
     seed_partner_hotel_name: str = Field(
         default="Stayvora Marina Suites",
-        validation_alias=AliasChoices("SEED_PARTNER_HOTEL_NAME", "seed_partner_hotel_name"),
+        validation_alias=AliasChoices(
+            "SEED_PARTNER_HOTEL_NAME", "seed_partner_hotel_name"
+        ),
     )
     auto_create_schema: bool = Field(
         default=False,
         validation_alias=AliasChoices("AUTO_CREATE_SCHEMA", "auto_create_schema"),
+    )
+    # ── Email delivery (Resend) ───────────────────────────────────────────────
+    resend_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("RESEND_API_KEY", "resend_api_key"),
+    )
+    email_from_address: str = Field(
+        default="noreply@stayvora.co.in",
+        validation_alias=AliasChoices("EMAIL_FROM_ADDRESS", "email_from_address"),
+    )
+    email_from_name: str = Field(
+        default="Stayvora",
+        validation_alias=AliasChoices("EMAIL_FROM_NAME", "email_from_name"),
     )
 
     @field_validator("database_url")
@@ -106,14 +136,14 @@ class Settings(BaseSettings):
 
 
 @lru_cache()
-def get_settings():
+def get_settings() -> Settings:
     return Settings()
 
 
 def validate_runtime_configuration(config: Settings) -> None:
+    """Raise RuntimeError for insecure production configurations."""
     if config.app_env.lower() != "production":
         return
-
     insecure_default = config.secret_key == "change-this-in-production"
     too_short = len(config.secret_key) < 32
     if insecure_default or too_short:
@@ -124,15 +154,53 @@ def validate_runtime_configuration(config: Settings) -> None:
 
 settings = get_settings()
 
-engine = create_engine(
-    settings.database_url,
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
-)
 
+def _is_sqlite(url: str) -> bool:
+    return url.startswith("sqlite")
+
+
+def _build_engine(database_url: str):
+    """
+    Build a SQLAlchemy engine tuned for the target database.
+
+    - PostgreSQL via Supabase pgbouncer (port 6543, transaction mode):
+        pool_size=3, max_overflow=7  — pgbouncer manages the real pool;
+        SQLAlchemy's pool should be tiny.
+    - SQLite (local dev / tests):
+        NullPool equivalent — each thread gets its own connection.
+    """
+    if _is_sqlite(database_url):
+        eng = create_engine(
+            database_url,
+            connect_args={"check_same_thread": False},
+        )
+        # Enable WAL mode for concurrent reads in tests
+        @event.listens_for(eng, "connect")
+        def set_sqlite_pragma(dbapi_conn, _record):
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+
+        return eng
+
+    # PostgreSQL / Supabase pgbouncer
+    return create_engine(
+        database_url,
+        pool_pre_ping=True,
+        pool_size=3,        # pgbouncer transaction mode — keep tiny
+        max_overflow=7,     # burst headroom
+        pool_timeout=15,    # fail fast instead of blocking
+        pool_recycle=300,   # recycle connections every 5 min
+        connect_args={
+            "connect_timeout": 10,
+            "application_name": "stayvora-api",
+        },
+    )
+
+
+engine = _build_engine(settings.database_url)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
 Base = declarative_base()
 
 

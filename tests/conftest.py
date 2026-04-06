@@ -15,7 +15,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///./test_bootstrap.db")
 
 import models  # noqa: E402
 from database import Base, get_db  # noqa: E402
-from routers import analytics, auth, bookings, notifications, ops, partner, payments, rooms  # noqa: E402
+from routers import analytics, auth, bookings, notifications, ops, partner, payments, reviews, rooms, wishlist  # noqa: E402
 from services.rate_limit_service import reset_rate_limits  # noqa: E402
 
 
@@ -38,6 +38,8 @@ def app(tmp_path):
     app.include_router(notifications.router)
     app.include_router(ops.router)
     app.include_router(partner.router)
+    app.include_router(reviews.router)
+    app.include_router(wishlist.router)
 
     def override_get_db():
         db = TestingSessionLocal()
