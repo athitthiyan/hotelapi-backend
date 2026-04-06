@@ -1053,6 +1053,15 @@ class WishlistItemResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class WishlistResponse(BaseModel):
+    items: list[WishlistItemResponse]
+    total: int
+
+
+class WishlistStatusResponse(BaseModel):
+    room_ids: list[int]
+
+
 # ─── Razorpay Schemas ─────────────────────────────────────────────────────────
 
 class RazorpayOrderRequest(BaseModel):
