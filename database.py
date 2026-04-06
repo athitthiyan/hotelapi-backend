@@ -65,7 +65,7 @@ class Settings(BaseSettings):
         ),
     )
     seed_admin_email: str = Field(
-        default="admin@example.com",
+        default="ops@stayvora.co.in",
         validation_alias=AliasChoices("SEED_ADMIN_EMAIL", "seed_admin_email"),
     )
     seed_admin_password: str = Field(
@@ -77,7 +77,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("SEED_ADMIN_NAME", "seed_admin_name"),
     )
     seed_partner_email: str = Field(
-        default="partner@example.com",
+        default="reservations@stayvora-partners.co.in",
         validation_alias=AliasChoices("SEED_PARTNER_EMAIL", "seed_partner_email"),
     )
     seed_partner_password: str = Field(

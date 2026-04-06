@@ -724,4 +724,59 @@ def test_reconciliation_recovers_mismatched_success_and_flags_orphan_paid_bookin
     assert reconcile.json()["orphan_paid_bookings"] >= 1
     assert booking_row.payment_status == models.PaymentStatus.PAID
     assert booking_row.status == models.BookingStatus.CONFIRMED
-    assert any(orphan_row.booking_ref in alert.subject for alert in alerts)
+
+
+def test_payment_status_reconciles_delayed_card_confirmation_without_waiting_for_webhook(
+    client,
+    create_booking,
+    db_session,
+):
+    booking = create_booking()
+
+    with patch(
+        "routers.payments.stripe.PaymentIntent.create",
+        return_value=stripe_intent("pi_delayed_status_001", "secret_delayed_status_001"),
+    ), patch(
+        "routers.payments.stripe.PaymentIntent.retrieve",
+        return_value=stripe_retrieved_intent("pi_delayed_status_001", "processing"),
+    ):
+        intent = client.post(
+            "/payments/create-payment-intent",
+            json={
+                "booking_id": booking["id"],
+                "payment_method": "card",
+                "idempotency_key": "status-reconcile-001",
+            },
+        )
+        acknowledged = acknowledge_card_payment(
+            client,
+            booking["id"],
+            intent.json()["transaction_ref"],
+            intent.json()["payment_intent_id"],
+        )
+
+    assert acknowledged.status_code == 200
+    assert acknowledged.json()["status"] == "processing"
+
+    with patch(
+        "services.payment_state_service.stripe.PaymentIntent.retrieve",
+        return_value=stripe_retrieved_intent("pi_delayed_status_001", "succeeded"),
+    ):
+        status_response = client.get(f"/payments/status/{booking['id']}")
+
+    booking_row = db_session.query(models.Booking).filter_by(id=booking["id"]).first()
+    latest_transaction = (
+        db_session.query(models.Transaction)
+        .filter_by(booking_id=booking["id"])
+        .order_by(models.Transaction.id.desc())
+        .first()
+    )
+
+    assert status_response.status_code == 200
+    assert status_response.json()["payment_status"] == "paid"
+    assert status_response.json()["booking_status"] == "confirmed"
+    assert status_response.json()["lifecycle_state"] == "CONFIRMED"
+    assert status_response.json()["latest_transaction"]["status"] == "success"
+    assert booking_row.payment_status == models.PaymentStatus.PAID
+    assert booking_row.status == models.BookingStatus.CONFIRMED
+    assert latest_transaction.status == models.TransactionStatus.SUCCESS

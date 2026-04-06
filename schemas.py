@@ -206,6 +206,7 @@ class BookingResponse(BaseModel):
     total_amount: float
     status: BookingStatus
     payment_status: PaymentStatus
+    lifecycle_state: Optional[str] = None
     refund_status: Optional[RefundStatus] = None
     refund_amount: float = 0.0
     refund_requested_at: Optional[datetime] = None
@@ -309,6 +310,7 @@ class TransactionResponse(BaseModel):
     card_last4: Optional[str]
     card_brand: Optional[str]
     status: TransactionStatus
+    lifecycle_state: Optional[str] = None
     failure_reason: Optional[str]
     created_at: datetime
     booking: Optional[BookingResponse] = None
@@ -326,6 +328,7 @@ class PaymentStateResponse(BaseModel):
     booking_ref: str
     booking_status: BookingStatus
     payment_status: PaymentStatus
+    lifecycle_state: Optional[str] = None
     latest_transaction: Optional[TransactionResponse] = None
 
 

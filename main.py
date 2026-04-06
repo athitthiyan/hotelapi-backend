@@ -80,8 +80,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="HotelAPI - Portfolio Backend",
-    description="Unified backend for Stayvora Booking, PayFlow Payment Gateway and InsightBoard Admin",
+    title="HotelAPI - Stayvora Backend",
+    description="Unified backend for Stayvora booking, PayFlow payments, InsightBoard operations, and partner workflows",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -152,7 +152,7 @@ def health_check():
 
 @app.post("/seed", tags=["Dev"])
 def seed_database(db=None):
-    """Seed the database with demo rooms and an admin account."""
+    """Seed the database with launch-ready starter rooms and operator accounts."""
     db = SessionLocal()
     try:
         rooms_created = 0
@@ -405,7 +405,7 @@ def seed_database(db=None):
                 state="Tamil Nadu",
                 country="India",
                 postal_code="600001",
-                description="Partner demo hotel for Stayvora onboarding, room operations, and payout testing.",
+                description="Partner launch starter hotel for Stayvora onboarding, room operations, and payout testing.",
                 verified_badge=True,
                 instant_confirmation_enabled=True,
                 free_cancellation_enabled=True,

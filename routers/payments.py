@@ -1,3 +1,4 @@
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -28,6 +29,11 @@ from services.notification_service import (
     queue_refund_failure_email,
     queue_refund_initiated_email,
     queue_refund_success_email,
+)
+from services.payment_state_service import (
+    attach_booking_lifecycle_state,
+    attach_transaction_lifecycle_state,
+    reconcile_gateway_payment_state,
 )
 from services.rate_limit_service import enforce_rate_limit
 
@@ -438,26 +444,35 @@ def get_card_details(payment_intent: dict) -> tuple[Optional[str], Optional[str]
 
 def verify_card_payment_intent_succeeded(
     payment_intent_id: Optional[str],
+    *,
+    attempts: int = 1,
+    delay_seconds: float = 0.0,
 ) -> tuple[bool, Optional[str], Optional[str]]:
     if not payment_intent_id or not settings.stripe_secret_key:
         return False, None, None
 
     stripe.api_key = settings.stripe_secret_key
-    try:
-        payment_intent = stripe.PaymentIntent.retrieve(payment_intent_id)
-    except Exception:
-        return False, None, None
+    safe_attempts = max(1, attempts)
+    for attempt in range(safe_attempts):
+        try:
+            payment_intent = stripe.PaymentIntent.retrieve(payment_intent_id)
+        except Exception:
+            payment_intent = None
 
-    status = (
-        payment_intent.get("status")
-        if isinstance(payment_intent, dict)
-        else getattr(payment_intent, "status", None)
-    )
-    if status != "succeeded":
-        return False, None, None
+        if payment_intent is not None:
+            status = (
+                payment_intent.get("status")
+                if isinstance(payment_intent, dict)
+                else getattr(payment_intent, "status", None)
+            )
+            if status == "succeeded":
+                last4, brand = get_card_details(payment_intent)
+                return True, last4, brand
 
-    last4, brand = get_card_details(payment_intent)
-    return True, last4, brand
+        if attempt < safe_attempts - 1 and delay_seconds > 0:
+            time.sleep(delay_seconds)
+
+    return False, None, None
 
 
 def build_payment_intent_response(
@@ -578,7 +593,9 @@ def upsert_success_transaction(
 
     db.commit()
     db.refresh(transaction)
-    return get_transaction_with_booking(db, transaction.id)
+    resolved = get_transaction_with_booking(db, transaction.id)
+    attach_transaction_lifecycle_state(db, resolved)
+    return resolved
 
 
 def get_successful_or_processing_response(
@@ -603,10 +620,14 @@ def get_successful_or_processing_response(
 
     existing_success = get_success_transaction_for_booking(db, booking.id)
     if existing_success:
-        return get_transaction_with_booking(db, existing_success.id)
+        resolved = get_transaction_with_booking(db, existing_success.id)
+        attach_transaction_lifecycle_state(db, resolved)
+        return resolved
 
     confirmed, verified_last4, verified_brand = verify_card_payment_intent_succeeded(
-        payment_intent_id
+        payment_intent_id,
+        attempts=3,
+        delay_seconds=0.5,
     )
     if confirmed:
         return upsert_success_transaction(
@@ -678,7 +699,9 @@ def mark_transaction_processing(
 
     db.commit()
     db.refresh(transaction)
-    return get_transaction_with_booking(db, transaction.id)
+    resolved = get_transaction_with_booking(db, transaction.id)
+    attach_transaction_lifecycle_state(db, resolved)
+    return resolved
 
 
 def record_failed_transaction(
@@ -928,7 +951,9 @@ def confirm_payment_success(
     if booking.payment_status == models.PaymentStatus.PAID:
         existing_success = get_success_transaction_for_booking(db, booking.id)
         if existing_success:
-            return get_transaction_with_booking(db, existing_success.id)
+            resolved = get_transaction_with_booking(db, existing_success.id)
+            attach_transaction_lifecycle_state(db, resolved)
+            return resolved
     booking = ensure_booking_can_accept_payment(db, booking)
     return get_successful_or_processing_response(
         db=db,
@@ -982,12 +1007,18 @@ def get_payment_status(booking_id: int, db: Session = Depends(get_db)):
         apply_expired_state(booking)
         db.commit()
         db.refresh(booking)
+    elif reconcile_gateway_payment_state(db, booking, attempts=2, delay_seconds=0.25):
+        db.commit()
+        db.refresh(booking)
     latest_transaction = get_latest_transaction_for_booking(db, booking_id)
+    lifecycle_state = attach_booking_lifecycle_state(db, booking, latest_transaction)
+    attach_transaction_lifecycle_state(db, latest_transaction)
     return schemas.PaymentStateResponse(
         booking_id=booking.id,
         booking_ref=booking.booking_ref,
         booking_status=booking.status,
         payment_status=booking.payment_status,
+        lifecycle_state=lifecycle_state,
         latest_transaction=latest_transaction,
     )
 

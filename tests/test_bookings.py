@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
 
 import models
 from routers.auth import hash_password
@@ -51,6 +52,26 @@ def user_headers(client, db_session, email="athit@example.com", password="UserPa
         json={"email": email, "password": password},
     )
     return {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+
+def stripe_intent(intent_id: str, client_secret: str):
+    return MagicMock(id=intent_id, client_secret=client_secret)
+
+
+def stripe_retrieved_intent(intent_id: str, status: str, last4: str = "4242", brand: str = "visa"):
+    return {
+        "id": intent_id,
+        "status": status,
+        "charges": {
+            "data": [
+                {
+                    "payment_method_details": {
+                        "card": {"last4": last4, "brand": brand}
+                    }
+                }
+            ]
+        },
+    }
 
 
 def test_create_booking_room_not_found(client):
@@ -144,6 +165,64 @@ def test_get_booking_history_and_by_id_and_ref(client, create_booking):
     assert by_id.status_code == 200
     assert by_ref.status_code == 200
     assert by_ref.json()["booking_ref"] == booking["booking_ref"]
+
+
+def test_guest_booking_endpoints_reconcile_processing_card_payment_and_remove_active_hold(
+    client,
+    db_session,
+    room_id,
+):
+    headers = user_headers(client, db_session)
+    created = client.post("/bookings", json=booking_payload(room_id), headers=headers)
+    assert created.status_code == 201
+    booking_id = created.json()["id"]
+
+    with patch(
+        "routers.payments.stripe.PaymentIntent.create",
+        return_value=stripe_intent("pi_booking_reconcile_001", "secret_booking_reconcile_001"),
+    ), patch(
+        "routers.payments.stripe.PaymentIntent.retrieve",
+        return_value=stripe_retrieved_intent("pi_booking_reconcile_001", "processing"),
+    ):
+        intent = client.post(
+            "/payments/create-payment-intent",
+            json={
+                "booking_id": booking_id,
+                "payment_method": "card",
+                "idempotency_key": "booking-reconcile-001",
+            },
+        )
+        acknowledged = client.post(
+            "/payments/payment-success",
+            json={
+                "booking_id": booking_id,
+                "payment_intent_id": intent.json()["payment_intent_id"],
+                "transaction_ref": intent.json()["transaction_ref"],
+                "payment_method": "card",
+            },
+        )
+
+    assert acknowledged.status_code == 200
+    assert acknowledged.json()["status"] == "processing"
+
+    with patch(
+        "services.payment_state_service.stripe.PaymentIntent.retrieve",
+        return_value=stripe_retrieved_intent("pi_booking_reconcile_001", "succeeded"),
+    ):
+        by_id = client.get(f"/bookings/{booking_id}")
+        history = client.get("/bookings/history", params={"email": "athit@example.com"})
+        my_bookings = client.get("/auth/me/bookings", headers=headers)
+        active_hold = client.get("/bookings/active-hold", headers=headers)
+
+    assert by_id.status_code == 200
+    assert by_id.json()["payment_status"] == "paid"
+    assert by_id.json()["status"] == "confirmed"
+    assert by_id.json()["lifecycle_state"] == "CONFIRMED"
+    assert history.status_code == 200
+    assert history.json()["bookings"][0]["lifecycle_state"] == "CONFIRMED"
+    assert my_bookings.status_code == 200
+    assert my_bookings.json()["bookings"][0]["lifecycle_state"] == "CONFIRMED"
+    assert active_hold.status_code == 204
 
 
 def test_get_booking_not_found_and_ref_not_found(client):

@@ -33,8 +33,11 @@ from services.notification_service import (
     queue_booking_support_request_email,
 )
 from services.payment_state_service import (
+    attach_booking_lifecycle_state,
+    attach_bookings_lifecycle_state,
     reconcile_booking_payment_state,
     reconcile_bookings_payment_states,
+    reconcile_gateway_payment_state,
 )
 from services.audit_service import write_audit_log
 from services.document_service import (
@@ -474,6 +477,7 @@ def get_booking_history(
         db.commit()
         for booking in bookings:
             db.refresh(booking)
+    attach_bookings_lifecycle_state(db, bookings)
 
     return {"bookings": bookings, "total": len(bookings)}
 
@@ -659,9 +663,13 @@ def extend_booking_hold(
 def get_booking(booking_id: int, db: Session = Depends(get_db)):
     release_expired_holds(db, booking_id=booking_id)
     booking = get_booking_or_404(db, booking_id)
-    if reconcile_booking_payment_state(db, booking):
+    if reconcile_gateway_payment_state(db, booking, attempts=2, delay_seconds=0.25):
         db.commit()
         db.refresh(booking)
+    elif reconcile_booking_payment_state(db, booking):
+        db.commit()
+        db.refresh(booking)
+    attach_booking_lifecycle_state(db, booking)
     return booking
 
 
@@ -679,9 +687,13 @@ def get_booking_by_ref(booking_ref: str, db: Session = Depends(get_db)):
     if expire_stale_booking_hold(booking):
         db.commit()
         db.refresh(booking)
+    elif reconcile_gateway_payment_state(db, booking, attempts=2, delay_seconds=0.25):
+        db.commit()
+        db.refresh(booking)
     elif reconcile_booking_payment_state(db, booking):
         db.commit()
         db.refresh(booking)
+    attach_booking_lifecycle_state(db, booking)
     return booking
 
 
