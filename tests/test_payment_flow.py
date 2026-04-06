@@ -573,7 +573,7 @@ def test_payment_intent_rejects_invalid_payment_method(client, create_booking):
 def test_repeated_failed_payments_trigger_temporary_block(client, create_booking, db_session):
     booking = create_booking()
 
-    for idx in range(3):
+    for idx in range(5):
         transaction = models.Transaction(
             booking_id=booking["id"],
             transaction_ref=f"TXN-BLOCK-{idx}",
@@ -596,10 +596,9 @@ def test_repeated_failed_payments_trigger_temporary_block(client, create_booking
     )
 
     assert response.status_code == 429
-    assert (
-        response.json()["detail"]
-        == "Payment attempts temporarily blocked due to repeated failures"
-    )
+    assert response.json()["detail"]["code"] == "PAYMENT_RETRY_COOLDOWN"
+    assert response.json()["detail"]["retry_after_seconds"] > 0
+    assert response.json()["detail"]["failed_payment_count"] == 5
 
 
 def test_reconciliation_expires_stale_processing_payment(client, create_booking, db_session):

@@ -255,9 +255,9 @@ class TestPaymentHelpers:
         db_session.commit()
         db_session.refresh(booking)
 
-        # Add 3 recent failures
+        # Add 5 recent failures
         now = datetime.now(timezone.utc)
-        for i in range(3):
+        for i in range(5):
             txn = models.Transaction(
                 booking_id=booking.id,
                 transaction_ref=f"TXN-FAIL{i:03d}",
@@ -265,7 +265,7 @@ class TestPaymentHelpers:
                 currency="USD",
                 payment_method="card",
                 status=models.TransactionStatus.FAILED,
-                created_at=now - timedelta(minutes=5),
+                created_at=now - timedelta(minutes=1),
             )
             db_session.add(txn)
         db_session.commit()

@@ -436,6 +436,9 @@ def test_get_active_hold_returns_current_logged_in_hold(client, db_session, room
     assert body["hotel_name"] == "Test Hotel"
     assert body["room_name"] == "deluxe"
     assert body["remaining_seconds"] > 0
+    assert body["lifecycle_state"] == "HOLD_CREATED"
+    assert body["booking_status"] == "pending"
+    assert body["payment_status"] == "pending"
 
 
 def test_get_active_hold_excludes_expired_and_cancelled_and_confirmed(client, db_session, room_id):
@@ -460,6 +463,12 @@ def test_get_active_hold_excludes_expired_and_cancelled_and_confirmed(client, db
     confirmed = client.get("/bookings/active-hold", headers=headers)
     assert confirmed.status_code == 204
 
+    booking.status = models.BookingStatus.PENDING
+    booking.payment_status = models.PaymentStatus.REFUNDED
+    db_session.commit()
+    refunded = client.get("/bookings/active-hold", headers=headers)
+    assert refunded.status_code == 204
+
 
 def test_get_active_hold_includes_processing_payment_holds(client, db_session, room_id):
     headers = user_headers(client, db_session)
@@ -474,6 +483,9 @@ def test_get_active_hold_includes_processing_payment_holds(client, db_session, r
 
     assert response.status_code == 200
     assert response.json()["booking_id"] == created["id"]
+    assert response.json()["lifecycle_state"] == "PAYMENT_PENDING"
+    assert response.json()["booking_status"] == "processing"
+    assert response.json()["payment_status"] == "processing"
 
 
 def test_get_active_hold_reconciles_successful_processing_booking(client, db_session, room_id):

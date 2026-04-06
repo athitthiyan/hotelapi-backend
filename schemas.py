@@ -236,6 +236,9 @@ class ActiveHoldResponse(BaseModel):
     guests: int
     expires_at: datetime
     remaining_seconds: int
+    lifecycle_state: Optional[str] = None
+    booking_status: Optional[str] = None
+    payment_status: Optional[str] = None
 
 
 class UnavailableDatesResponse(BaseModel):
@@ -330,6 +333,9 @@ class PaymentStateResponse(BaseModel):
     payment_status: PaymentStatus
     lifecycle_state: Optional[str] = None
     latest_transaction: Optional[TransactionResponse] = None
+    failed_payment_count: int = 0
+    retry_after_seconds: int = 0
+    retry_available_at: Optional[str] = None
 
 
 class RefundRequest(BaseModel):

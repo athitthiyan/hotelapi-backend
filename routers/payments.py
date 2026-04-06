@@ -41,7 +41,10 @@ router = APIRouter(prefix="/payments", tags=["Payments"])
 
 RECONCILIATION_TIMEOUT_MINUTES = 5
 FAILED_PAYMENT_BLOCK_WINDOW_MINUTES = 30
-FAILED_PAYMENT_BLOCK_THRESHOLD = 3
+FAILED_PAYMENT_BLOCK_THRESHOLD = 5
+FAILED_PAYMENT_BLOCK_SECONDS = 5 * 60
+FAILED_PAYMENT_ESCALATED_BLOCK_THRESHOLD = 10
+FAILED_PAYMENT_ESCALATED_BLOCK_SECONDS = 15 * 60
 REFUND_SETTLEMENT_DAYS = 5
 
 
@@ -334,14 +337,14 @@ def get_active_transaction_for_booking(
     )
 
 
-def has_recent_failed_payment_burst(
+def get_failed_payment_retry_policy(
     db: Session,
     booking_id: int,
     now: Optional[datetime] = None,
-) -> bool:
+) -> dict:
     now = now or utc_now()
     cutoff = now - timedelta(minutes=FAILED_PAYMENT_BLOCK_WINDOW_MINUTES)
-    recent_failures = (
+    recent_failures = list(
         db.query(models.Transaction)
         .filter(
             models.Transaction.booking_id == booking_id,
@@ -353,9 +356,41 @@ def has_recent_failed_payment_burst(
             ),
             models.Transaction.created_at >= cutoff,
         )
-        .count()
+        .order_by(models.Transaction.created_at.desc(), models.Transaction.id.desc())
+        .all()
     )
-    return recent_failures >= FAILED_PAYMENT_BLOCK_THRESHOLD
+    failed_count = len(recent_failures)
+    if failed_count < FAILED_PAYMENT_BLOCK_THRESHOLD:
+        return {
+            "blocked": False,
+            "failed_payment_count": failed_count,
+            "retry_after_seconds": 0,
+            "retry_available_at": None,
+        }
+
+    cooldown_seconds = (
+        FAILED_PAYMENT_ESCALATED_BLOCK_SECONDS
+        if failed_count >= FAILED_PAYMENT_ESCALATED_BLOCK_THRESHOLD
+        else FAILED_PAYMENT_BLOCK_SECONDS
+    )
+    retry_available_at = recent_failures[0].created_at + timedelta(seconds=cooldown_seconds)
+    if retry_available_at.tzinfo is None:
+        retry_available_at = retry_available_at.replace(tzinfo=timezone.utc)
+    retry_after_seconds = max(0, int((retry_available_at - now).total_seconds()))
+    return {
+        "blocked": retry_after_seconds > 0,
+        "failed_payment_count": failed_count,
+        "retry_after_seconds": retry_after_seconds,
+        "retry_available_at": retry_available_at.isoformat() if retry_after_seconds > 0 else None,
+    }
+
+
+def has_recent_failed_payment_burst(
+    db: Session,
+    booking_id: int,
+    now: Optional[datetime] = None,
+) -> bool:
+    return bool(get_failed_payment_retry_policy(db, booking_id, now)["blocked"])
 
 
 def ensure_booking_can_accept_payment(db: Session, booking: models.Booking) -> models.Booking:
@@ -375,10 +410,15 @@ def ensure_booking_can_accept_payment(db: Session, booking: models.Booking) -> m
         raise HTTPException(status_code=409, detail="Booking already paid")
     if get_success_transaction_for_booking(db, booking.id):
         raise HTTPException(status_code=409, detail="Booking already paid")
-    if has_recent_failed_payment_burst(db, booking.id):
+    retry_policy = get_failed_payment_retry_policy(db, booking.id)
+    if retry_policy["blocked"]:
         raise HTTPException(
             status_code=429,
-            detail="Payment attempts temporarily blocked due to repeated failures",
+            detail={
+                "code": "PAYMENT_RETRY_COOLDOWN",
+                "message": "Payment temporarily paused for security.",
+                **retry_policy,
+            },
         )
 
     # Revalidate that THIS booking still holds its inventory lock.
@@ -997,7 +1037,12 @@ def record_payment_failure(
         payment_intent_id=payment_intent_id,
         transaction_ref=transaction_ref,
     )
-    return {"message": "Payment failure recorded", "transaction_ref": transaction.transaction_ref}
+    retry_policy = get_failed_payment_retry_policy(db, booking.id)
+    return {
+        "message": "Payment failure recorded",
+        "transaction_ref": transaction.transaction_ref,
+        **retry_policy,
+    }
 
 
 @router.get("/status/{booking_id}", response_model=schemas.PaymentStateResponse)
@@ -1013,6 +1058,7 @@ def get_payment_status(booking_id: int, db: Session = Depends(get_db)):
     latest_transaction = get_latest_transaction_for_booking(db, booking_id)
     lifecycle_state = attach_booking_lifecycle_state(db, booking, latest_transaction)
     attach_transaction_lifecycle_state(db, latest_transaction)
+    retry_policy = get_failed_payment_retry_policy(db, booking.id)
     return schemas.PaymentStateResponse(
         booking_id=booking.id,
         booking_ref=booking.booking_ref,
@@ -1020,6 +1066,9 @@ def get_payment_status(booking_id: int, db: Session = Depends(get_db)):
         payment_status=booking.payment_status,
         lifecycle_state=lifecycle_state,
         latest_transaction=latest_transaction,
+        failed_payment_count=retry_policy["failed_payment_count"],
+        retry_after_seconds=retry_policy["retry_after_seconds"],
+        retry_available_at=retry_policy["retry_available_at"],
     )
 
 

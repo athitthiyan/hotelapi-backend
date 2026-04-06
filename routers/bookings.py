@@ -49,6 +49,12 @@ from services.document_service import (
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
 
 BOOKING_HOLD_MINUTES = 10
+VISIBLE_ACTIVE_HOLD_LIFECYCLE_STATES = {
+    "HOLD_CREATED",
+    "PAYMENT_FAILED",
+    "PAYMENT_PENDING",
+    "PAYMENT_COOLDOWN",
+}
 
 
 def resolve_authenticated_booking_user(
@@ -81,6 +87,32 @@ def calculate_booking_amount(room: models.Room, nights: int):
     service_fee = round(room_total * 0.05, 2)
     total = round(room_total + taxes + service_fee, 2)
     return room_total, taxes, service_fee, total
+
+
+def should_return_active_hold(booking: models.Booking, remaining_seconds: int) -> bool:
+    if remaining_seconds <= 0:
+        return False
+
+    if booking.status in {
+        models.BookingStatus.CANCELLED,
+        models.BookingStatus.CONFIRMED,
+        models.BookingStatus.COMPLETED,
+        models.BookingStatus.EXPIRED,
+    }:
+        return False
+
+    if booking.payment_status in {
+        models.PaymentStatus.PAID,
+        models.PaymentStatus.REFUNDED,
+        models.PaymentStatus.EXPIRED,
+    }:
+        return False
+
+    lifecycle_state = getattr(booking, "lifecycle_state", None)
+    if lifecycle_state:
+        return lifecycle_state in VISIBLE_ACTIVE_HOLD_LIFECYCLE_STATES
+
+    return True
 
 
 def calculate_booking_amount_for_dates(
@@ -495,9 +527,27 @@ def get_active_hold(
     active_hold = get_latest_active_hold_for_user(db, user)
     if not active_hold or not active_hold.room or not active_hold.hold_expires_at:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+    if reconcile_gateway_payment_state(
+        db,
+        active_hold,
+        attempts=2,
+        delay_seconds=0.25,
+    ) or reconcile_booking_payment_state(db, active_hold):
+        db.commit()
+        db.refresh(active_hold)
+        if (
+            active_hold.payment_status == models.PaymentStatus.PAID
+            or active_hold.status == models.BookingStatus.CONFIRMED
+        ):
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-    normalized_expiry = normalize_comparison_datetime(active_hold.hold_expires_at, utc_now())
-    remaining_seconds = max(0, int((normalized_expiry - utc_now()).total_seconds()))
+    lifecycle_state = attach_booking_lifecycle_state(db, active_hold)
+    now = utc_now()
+    normalized_expiry = normalize_comparison_datetime(active_hold.hold_expires_at, now)
+    remaining_seconds = max(0, int((normalized_expiry - now).total_seconds()))
+    if not should_return_active_hold(active_hold, remaining_seconds):
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     return {
         "booking_id": active_hold.id,
         "room_id": active_hold.room_id,
@@ -508,6 +558,9 @@ def get_active_hold(
         "guests": active_hold.guests,
         "expires_at": active_hold.hold_expires_at,
         "remaining_seconds": remaining_seconds,
+        "lifecycle_state": lifecycle_state,
+        "booking_status": active_hold.status.value,
+        "payment_status": active_hold.payment_status.value,
     }
 
 
