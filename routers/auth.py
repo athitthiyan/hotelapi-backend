@@ -462,12 +462,32 @@ def reset_password(
 # ─── Social Login ─────────────────────────────────────────────────────────────
 
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
+GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
 MICROSOFT_JWKS_URL = "https://login.microsoftonline.com/common/discovery/v2.0/keys"
 
 
 async def _verify_google_token(id_token: str) -> dict:
     async with _httpx.AsyncClient(timeout=10) as client:
+        # Validate audience (client_id) via tokeninfo to prevent cross-app token reuse
+        if settings.google_client_id:
+            try:
+                ti_resp = await client.get(
+                    GOOGLE_TOKENINFO_URL,
+                    params={"access_token": id_token},
+                )
+            except _httpx.RequestError as exc:
+                raise HTTPException(status_code=502, detail="Failed to verify Google token") from exc
+            if ti_resp.status_code != 200:
+                raise HTTPException(status_code=401, detail="Google token verification failed")
+            ti_data = ti_resp.json()
+            if ti_data.get("aud") != settings.google_client_id:
+                raise HTTPException(status_code=401, detail="Google token audience mismatch")
+            token_exp = ti_data.get("expires_in", "0")
+            if int(token_exp) <= 0:
+                raise HTTPException(status_code=401, detail="Google token has expired")
+
+        # Fetch user profile data
         try:
             resp = await client.get(
                 GOOGLE_USERINFO_URL,

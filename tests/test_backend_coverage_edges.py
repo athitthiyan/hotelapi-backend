@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 import main
 import models
 import schemas
+from database import settings
 from routers import auth, bookings, partner, payments, reviews, wishlist
 from services import inventory_service
 
@@ -145,6 +146,15 @@ class FakeAsyncClient:
         if self.exc is not None:
             raise self.exc
         return self.response
+
+
+@pytest.fixture(autouse=True)
+def _disable_google_audience_check():
+    """Disable Google audience validation in tests unless a test explicitly sets it."""
+    original = settings.google_client_id
+    settings.google_client_id = ""
+    yield
+    settings.google_client_id = original
 
 
 def partner_payload(**overrides):
@@ -399,6 +409,50 @@ class TestAuthCoverageEdges:
                     schemas.SocialLoginRequest(provider="google", id_token="token"),
                     db=db_session,
                 )
+
+    @pytest.mark.anyio
+    async def test_google_audience_mismatch_is_rejected(self, db_session):
+        """When google_client_id is configured, tokeninfo aud must match."""
+        original = settings.google_client_id
+        settings.google_client_id = "expected-client-id"
+        try:
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr(
+                    auth._httpx,
+                    "AsyncClient",
+                    lambda timeout=10: FakeAsyncClient(
+                        response=FakeResponse(200, {"aud": "wrong-client-id", "expires_in": "3600"})
+                    ),
+                )
+                with pytest.raises(HTTPException, match="Google token audience mismatch"):
+                    await auth.social_login(
+                        schemas.SocialLoginRequest(provider="google", id_token="token"),
+                        db=db_session,
+                    )
+        finally:
+            settings.google_client_id = original
+
+    @pytest.mark.anyio
+    async def test_google_expired_token_is_rejected(self, db_session):
+        """When google_client_id is configured, expired tokens are rejected."""
+        original = settings.google_client_id
+        settings.google_client_id = "expected-client-id"
+        try:
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr(
+                    auth._httpx,
+                    "AsyncClient",
+                    lambda timeout=10: FakeAsyncClient(
+                        response=FakeResponse(200, {"aud": "expected-client-id", "expires_in": "0"})
+                    ),
+                )
+                with pytest.raises(HTTPException, match="Google token has expired"):
+                    await auth.social_login(
+                        schemas.SocialLoginRequest(provider="google", id_token="token"),
+                        db=db_session,
+                    )
+        finally:
+            settings.google_client_id = original
 
     @pytest.mark.anyio
     async def test_social_login_links_existing_user_and_blocks_inactive_user(self, db_session):

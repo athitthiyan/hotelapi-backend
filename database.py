@@ -149,6 +149,11 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("GOOGLE_MAPS_API_KEY", "google_maps_api_key"),
     )
+    # ── Google OAuth ──────────────────────────────────────────────────────────
+    google_client_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("GOOGLE_CLIENT_ID", "google_client_id"),
+    )
     # ── Apple Sign-In ─────────────────────────────────────────────────────────
     apple_client_id: str = Field(
         default="",
