@@ -570,7 +570,7 @@ async def social_login(
     else:  # microsoft
         provider_data = await _verify_jwks_token(
             payload.id_token,
-            MICROSOFT_JWKS_URL.replace("common", settings.microsoft_tenant_id),
+            MICROSOFT_JWKS_URL,
             audience=settings.microsoft_client_id or None,
         )
         id_field = "microsoft_id"
