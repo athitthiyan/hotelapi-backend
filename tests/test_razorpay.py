@@ -62,7 +62,7 @@ class TestCreateOrder:
 
     def test_create_order_already_paid(self, client, room_id, db_session):
         bk = _create_booking(client, room_id)
-        booking = db_session.query(models.Booking).get(bk["id"])
+        booking = db_session.get(models.Booking, bk["id"])
         booking.payment_status = models.PaymentStatus.PAID
         db_session.commit()
 
@@ -74,7 +74,7 @@ class TestCreateOrder:
 
     def test_create_order_cancelled_booking(self, client, room_id, db_session):
         bk = _create_booking(client, room_id)
-        booking = db_session.query(models.Booking).get(bk["id"])
+        booking = db_session.get(models.Booking, bk["id"])
         booking.status = models.BookingStatus.CANCELLED
         db_session.commit()
 
@@ -86,7 +86,7 @@ class TestCreateOrder:
 
     def test_create_order_expired_booking(self, client, room_id, db_session):
         bk = _create_booking(client, room_id)
-        booking = db_session.query(models.Booking).get(bk["id"])
+        booking = db_session.get(models.Booking, bk["id"])
         booking.status = models.BookingStatus.EXPIRED
         db_session.commit()
 
@@ -249,7 +249,7 @@ class TestVerifyPayment:
         payment_id = "pay_captured_001"
         sig = _sign(order_id, payment_id, secret)
 
-        booking = db_session.query(models.Booking).get(bk["id"])
+        booking = db_session.get(models.Booking, bk["id"])
         amount_paise = int(booking.total_amount * 100)
 
         mock_client = MagicMock()
@@ -273,7 +273,7 @@ class TestVerifyPayment:
         assert resp.json()["status"] == "success"
 
         db_session.expire_all()
-        booking = db_session.query(models.Booking).get(bk["id"])
+        booking = db_session.get(models.Booking, bk["id"])
         assert booking.payment_status == models.PaymentStatus.PAID
         assert booking.status == models.BookingStatus.CONFIRMED
 
@@ -290,7 +290,7 @@ class TestVerifyPayment:
         payment_id = "pay_auth_001"
         sig = _sign(order_id, payment_id, secret)
 
-        booking = db_session.query(models.Booking).get(bk["id"])
+        booking = db_session.get(models.Booking, bk["id"])
         amount_paise = int(booking.total_amount * 100)
 
         mock_client = MagicMock()
@@ -326,7 +326,7 @@ class TestVerifyPayment:
         payment_id = "pay_capfail"
         sig = _sign(order_id, payment_id, secret)
 
-        booking = db_session.query(models.Booking).get(bk["id"])
+        booking = db_session.get(models.Booking, bk["id"])
         amount_paise = int(booking.total_amount * 100)
 
         mock_client = MagicMock()
@@ -367,7 +367,7 @@ class TestVerifyPayment:
         mock_client.payment.fetch.return_value = {
             "status": "failed",
             "order_id": order_id,
-            "amount": int(db_session.query(models.Booking).get(bk["id"]).total_amount * 100),
+            "amount": int(db_session.get(models.Booking, bk["id"]).total_amount * 100),
         }
         mock_client_fn.return_value = mock_client
 
@@ -399,7 +399,7 @@ class TestVerifyPayment:
         mock_client.payment.fetch.return_value = {
             "status": "captured",
             "order_id": "order_DIFFERENT",
-            "amount": int(db_session.query(models.Booking).get(bk["id"]).total_amount * 100),
+            "amount": int(db_session.get(models.Booking, bk["id"]).total_amount * 100),
         }
         mock_client_fn.return_value = mock_client
 
@@ -530,7 +530,7 @@ class TestWebhook:
         assert resp.status_code == 200
 
         db_session.expire_all()
-        booking = db_session.query(models.Booking).get(bk["id"])
+        booking = db_session.get(models.Booking, bk["id"])
         assert booking.payment_status == models.PaymentStatus.PAID
         assert booking.status == models.BookingStatus.CONFIRMED
 
@@ -561,7 +561,7 @@ class TestWebhook:
             razorpay_order_id=order_resp["order_id"]
         ).first()
         assert txn.status == models.TransactionStatus.FAILED
-        booking = db_session.query(models.Booking).get(bk["id"])
+        booking = db_session.get(models.Booking, bk["id"])
         assert booking.payment_status == models.PaymentStatus.FAILED
 
     def test_webhook_unknown_event(self, client):
@@ -702,7 +702,7 @@ class TestWebhook:
             json={"booking_id": bk["id"], "payment_method": "mock"},
         ).json()
 
-        booking = db_session.query(models.Booking).get(bk["id"])
+        booking = db_session.get(models.Booking, bk["id"])
         booking.payment_status = models.PaymentStatus.PAID
         db_session.commit()
 

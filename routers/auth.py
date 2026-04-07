@@ -1,5 +1,6 @@
 import hashlib
 import secrets
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -15,6 +16,7 @@ from sqlalchemy.orm import Session, joinedload
 import models
 import schemas
 from database import get_db, settings
+from services.audit_service import write_audit_log
 from services.payment_state_service import attach_bookings_lifecycle_state
 from services.rate_limit_service import enforce_rate_limit
 
@@ -78,18 +80,34 @@ def create_token(user: models.User, token_type: str, expires_delta: timedelta) -
         "is_admin": user.is_admin,
         "is_partner": user.is_partner,
         "token_type": token_type,
+        "jti": str(uuid.uuid4()),
         "exp": utc_now() + expires_delta,
     }
     return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
 
 
-def build_token_response(user: models.User) -> schemas.TokenResponse:
+def _hash_token(raw_token: str) -> str:
+    return hashlib.sha256(raw_token.encode()).hexdigest()
+
+
+def build_token_response(user: models.User, db: Session | None = None) -> schemas.TokenResponse:
     access_token = create_token(
         user, "access", timedelta(minutes=settings.access_token_exp_minutes)
     )
     refresh_token = create_token(
         user, "refresh", timedelta(days=settings.refresh_token_exp_days)
     )
+
+    # Persist refresh token for rotation / revocation
+    if db is not None:
+        db.add(models.RefreshToken(
+            user_id=user.id,
+            token_hash=_hash_token(refresh_token),
+            family_id=str(uuid.uuid4()),
+            expires_at=utc_now() + timedelta(days=settings.refresh_token_exp_days),
+        ))
+        db.flush()
+
     return schemas.TokenResponse(
         access_token=access_token,
         refresh_token=refresh_token,
@@ -190,6 +208,14 @@ def get_current_partner(user: models.User = Depends(get_current_user)) -> models
     return user
 
 
+def _request_meta(request: Request) -> dict:
+    """Extract IP and User-Agent for audit logs."""
+    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    if not ip and request.client:
+        ip = request.client.host
+    return {"ip": ip or "unknown", "user_agent": request.headers.get("user-agent", "")}
+
+
 @router.post("/signup", response_model=schemas.TokenResponse, status_code=201)
 def signup(payload: schemas.UserSignup, request: Request, db: Session = Depends(get_db)):
     normalized_email = normalize_email(payload.email)
@@ -209,7 +235,10 @@ def signup(payload: schemas.UserSignup, request: Request, db: Session = Depends(
     db.add(user)
     db.commit()
     db.refresh(user)
-    return build_token_response(user)
+    resp = build_token_response(user, db)
+    write_audit_log(db, user.id, "auth.signup", "user", user.id, _request_meta(request))
+    db.commit()
+    return resp
 
 
 @router.post("/login", response_model=schemas.TokenResponse)
@@ -218,17 +247,77 @@ def login(payload: schemas.UserLogin, request: Request, db: Session = Depends(ge
     enforce_rate_limit("auth:login", request, subject=normalized_email)
     user = db.query(models.User).filter(models.User.email == normalized_email).first()
     if not user or not verify_password(payload.password, user.hashed_password):
+        write_audit_log(db, None, "auth.login.failed", "user", normalized_email, {**_request_meta(request), "reason": "invalid_credentials"})
+        db.commit()
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.is_active:
+        write_audit_log(db, user.id, "auth.login.failed", "user", user.id, {**_request_meta(request), "reason": "inactive"})
+        db.commit()
         raise HTTPException(status_code=403, detail="User account is inactive")
-    return build_token_response(user)
+    resp = build_token_response(user, db)
+    write_audit_log(db, user.id, "auth.login.success", "user", user.id, _request_meta(request))
+    db.commit()
+    return resp
 
 
 @router.post("/refresh", response_model=schemas.TokenResponse)
 def refresh_token(payload: schemas.RefreshTokenRequest, db: Session = Depends(get_db)):
     token_payload = decode_token(payload.refresh_token, "refresh")
     user = get_user_from_payload(db, token_payload)
-    return build_token_response(user)
+
+    # Validate refresh token exists and is not revoked
+    incoming_hash = _hash_token(payload.refresh_token)
+    stored = db.query(models.RefreshToken).filter(
+        models.RefreshToken.token_hash == incoming_hash
+    ).first()
+
+    if stored and stored.revoked:
+        # Reuse of a revoked token → token theft detected → revoke entire family
+        db.query(models.RefreshToken).filter(
+            models.RefreshToken.family_id == stored.family_id
+        ).update({"revoked": True})
+        write_audit_log(db, user.id, "auth.refresh.reuse_detected", "user", user.id, {"family_id": stored.family_id})
+        db.commit()
+        raise HTTPException(status_code=401, detail="Token reuse detected. All sessions revoked.")
+
+    # Issue new tokens, inheriting the family_id
+    family_id = stored.family_id if stored else str(uuid.uuid4())
+    if stored:
+        stored.revoked = True  # revoke the old refresh token
+
+    access_token = create_token(
+        user, "access", timedelta(minutes=settings.access_token_exp_minutes)
+    )
+    new_refresh_token = create_token(
+        user, "refresh", timedelta(days=settings.refresh_token_exp_days)
+    )
+    db.add(models.RefreshToken(
+        user_id=user.id,
+        token_hash=_hash_token(new_refresh_token),
+        family_id=family_id,
+        expires_at=utc_now() + timedelta(days=settings.refresh_token_exp_days),
+    ))
+    db.commit()
+    return schemas.TokenResponse(
+        access_token=access_token,
+        refresh_token=new_refresh_token,
+        user=user,
+    )
+
+
+@router.post("/logout", response_model=schemas.MessageResponse)
+def logout(payload: schemas.LogoutRequest, db: Session = Depends(get_db)):
+    incoming_hash = _hash_token(payload.refresh_token)
+    stored = db.query(models.RefreshToken).filter(
+        models.RefreshToken.token_hash == incoming_hash
+    ).first()
+    if stored:
+        # Revoke entire token family for this session
+        db.query(models.RefreshToken).filter(
+            models.RefreshToken.family_id == stored.family_id
+        ).update({"revoked": True})
+        db.commit()
+    return schemas.MessageResponse(message="Logged out successfully")
 
 
 @router.get("/me", response_model=schemas.UserResponse)
@@ -552,8 +641,10 @@ async def _verify_jwks_token(id_token: str, jwks_url: str, audience: str | None)
 @router.post("/social-login", response_model=schemas.TokenResponse)
 async def social_login(
     payload: schemas.SocialLoginRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
+    enforce_rate_limit("auth:social-login", request)
     if payload.provider not in ("google", "apple", "microsoft"):
         raise HTTPException(status_code=400, detail="Unsupported provider. Use: google, apple, microsoft")
 
@@ -583,6 +674,9 @@ async def social_login(
 
     if not email:
         raise HTTPException(status_code=401, detail="Provider did not return an email address")
+
+    if not email_verified:
+        raise HTTPException(status_code=401, detail="Email not verified with provider")
 
     # Look up user by provider ID first, then by email
     user = db.query(models.User).filter(
@@ -619,7 +713,10 @@ async def social_login(
 
     db.commit()
     db.refresh(user)
-    return build_token_response(user)
+    resp = build_token_response(user, db)
+    write_audit_log(db, user.id, "auth.social_login.success", "user", user.id, {**_request_meta(request), "provider": payload.provider})
+    db.commit()
+    return resp
 
 
 # ─── Email Verification ───────────────────────────────────────────────────────

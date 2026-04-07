@@ -114,11 +114,13 @@ class TestRateLimitService:
         req = MagicMock()
         req.client = MagicMock()
         req.client.host = host
+        req.headers = {}
         return req
 
     def _make_request_no_client(self):
         req = MagicMock()
         req.client = None
+        req.headers = {}
         return req
 
     def test_build_key_with_subject(self):

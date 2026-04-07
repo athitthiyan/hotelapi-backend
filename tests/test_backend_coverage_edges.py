@@ -131,6 +131,16 @@ class FakeResponse:
         return self._payload
 
 
+class FakeRequest:
+    """Minimal Request mock for endpoints that need request.client / request.headers."""
+    def __init__(self):
+        self.client = SimpleNamespace(host="127.0.0.1")
+        self.headers = {}
+
+
+_fake_request = FakeRequest()
+
+
 class FakeAsyncClient:
     def __init__(self, *, response: FakeResponse | None = None, exc: Exception | None = None):
         self.response = response
@@ -367,6 +377,7 @@ class TestAuthCoverageEdges:
         with pytest.raises(HTTPException, match="Unsupported provider"):
             await auth.social_login(
                 schemas.SocialLoginRequest(provider="github", id_token="token"),
+                request=_fake_request,
                 db=db_session,
             )
 
@@ -383,6 +394,7 @@ class TestAuthCoverageEdges:
             with pytest.raises(HTTPException, match="Failed to verify Google token"):
                 await auth.social_login(
                     schemas.SocialLoginRequest(provider="google", id_token="token"),
+                    request=_fake_request,
                     db=db_session,
                 )
 
@@ -395,6 +407,7 @@ class TestAuthCoverageEdges:
             with pytest.raises(HTTPException, match="Google token verification failed"):
                 await auth.social_login(
                     schemas.SocialLoginRequest(provider="google", id_token="token"),
+                    request=_fake_request,
                     db=db_session,
                 )
 
@@ -407,6 +420,7 @@ class TestAuthCoverageEdges:
             with pytest.raises(HTTPException, match="Insufficient data from Google"):
                 await auth.social_login(
                     schemas.SocialLoginRequest(provider="google", id_token="token"),
+                    request=_fake_request,
                     db=db_session,
                 )
 
@@ -427,6 +441,7 @@ class TestAuthCoverageEdges:
                 with pytest.raises(HTTPException, match="Google token audience mismatch"):
                     await auth.social_login(
                         schemas.SocialLoginRequest(provider="google", id_token="token"),
+                        request=_fake_request,
                         db=db_session,
                     )
         finally:
@@ -449,6 +464,7 @@ class TestAuthCoverageEdges:
                 with pytest.raises(HTTPException, match="Google token has expired"):
                     await auth.social_login(
                         schemas.SocialLoginRequest(provider="google", id_token="token"),
+                        request=_fake_request,
                         db=db_session,
                     )
         finally:
@@ -474,12 +490,14 @@ class TestAuthCoverageEdges:
                             "email": existing.email.upper(),
                             "name": "Linked User",
                             "picture": "https://example.com/picture.png",
+                            "email_verified": True,
                         },
                     )
                 ),
             )
             response = await auth.social_login(
                 schemas.SocialLoginRequest(provider="google", id_token="token"),
+                request=_fake_request,
                 db=db_session,
             )
 
@@ -502,6 +520,7 @@ class TestAuthCoverageEdges:
                             "sub": "google-123",
                             "email": existing.email,
                             "name": "Linked User",
+                            "email_verified": True,
                         },
                     )
                 ),
@@ -509,6 +528,7 @@ class TestAuthCoverageEdges:
             with pytest.raises(HTTPException, match="deactivated"):
                 await auth.social_login(
                     schemas.SocialLoginRequest(provider="google", id_token="token"),
+                    request=_fake_request,
                     db=db_session,
                 )
 
@@ -526,12 +546,14 @@ class TestAuthCoverageEdges:
                             "email": "fresh-user@example.com",
                             "name": "Fresh User",
                             "picture": "https://example.com/fresh.png",
+                            "email_verified": True,
                         },
                     )
                 ),
             )
             response = await auth.social_login(
                 schemas.SocialLoginRequest(provider="google", id_token="token"),
+                request=_fake_request,
                 db=db_session,
             )
 
@@ -566,12 +588,14 @@ class TestAuthCoverageEdges:
                             "email": existing.email,
                             "name": "Google Match",
                             "picture": "https://example.com/new-picture.png",
+                            "email_verified": True,
                         },
                     )
                 ),
             )
             response = await auth.social_login(
                 schemas.SocialLoginRequest(provider="google", id_token="token"),
+                request=_fake_request,
                 db=db_session,
             )
 
@@ -599,12 +623,14 @@ class TestAuthCoverageEdges:
                             "email": existing.email,
                             "name": "Email Link",
                             "picture": "https://example.com/should-not-overwrite.png",
+                            "email_verified": True,
                         },
                     )
                 ),
             )
             response = await auth.social_login(
                 schemas.SocialLoginRequest(provider="google", id_token="token"),
+                request=_fake_request,
                 db=db_session,
             )
 

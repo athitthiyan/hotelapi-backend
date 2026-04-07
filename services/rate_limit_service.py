@@ -7,6 +7,7 @@ from fastapi import HTTPException, Request
 RATE_LIMITS = {
     "auth:signup": (5, timedelta(minutes=10)),
     "auth:login": (8, timedelta(minutes=10)),
+    "auth:social-login": (10, timedelta(minutes=10)),
     "auth:forgot-password": (5, timedelta(minutes=15)),
     "auth:phone-otp": (5, timedelta(minutes=10)),
     "partner:register": (5, timedelta(minutes=10)),
@@ -22,8 +23,16 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _get_client_ip(request: Request) -> str:
+    """Extract real client IP, supporting reverse proxies (X-Forwarded-For)."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
 def build_rate_limit_key(scope: str, request: Request, subject: str | None = None) -> str:
-    client_host = request.client.host if request.client else "unknown"
+    client_host = _get_client_ip(request)
     suffix = subject or client_host
     return f"{scope}:{client_host}:{suffix}"
 

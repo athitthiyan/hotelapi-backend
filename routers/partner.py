@@ -292,7 +292,9 @@ def partner_register(
     db.add(hotel)
     db.commit()
     db.refresh(user)
-    return build_token_response(user)
+    resp = build_token_response(user, db)
+    db.commit()
+    return resp
 
 
 @router.post("/login", response_model=schemas.TokenResponse)
@@ -309,7 +311,9 @@ def partner_login(
         raise HTTPException(status_code=403, detail="User account is inactive")
     if not user.is_partner:
         raise HTTPException(status_code=403, detail="Partner access required")
-    return build_token_response(user)
+    resp = build_token_response(user, db)
+    db.commit()
+    return resp
 
 
 @router.get("/hotel", response_model=schemas.PartnerHotelResponse)
