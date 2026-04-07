@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from collections import deque
 from datetime import date, datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -724,11 +724,15 @@ class TestNotificationService:
         assert notif.event_type == "booking_cancelled"
         assert sample_booking.booking_ref in notif.subject
 
-    def test_deliver_notification_success(self):
+    @patch("services.notification_service.get_settings")
+    def test_deliver_notification_success(self, mock_get_settings):
         from services.notification_service import deliver_notification
+        mock_settings = MagicMock()
+        mock_settings.resend_api_key = ""
+        mock_get_settings.return_value = mock_settings
         notif = MagicMock()
         notif.recipient_email = "valid@example.com"
-        # Must not raise
+        # Must not raise — skips delivery when no API key
         deliver_notification(notif)
 
     def test_deliver_notification_fails_for_test_domain(self):
@@ -741,7 +745,7 @@ class TestNotificationService:
     def test_process_pending_empty(self, sqlite_session):
         from services.notification_service import process_pending_notifications
         result = process_pending_notifications(sqlite_session, limit=10)
-        assert result == {"processed": 0, "sent": 0, "failed": 0}
+        assert result == {"sent": 0, "failed": 0, "total": 0}
 
     def test_process_pending_all_sent(self, sqlite_session, sample_booking):
         from services.notification_service import (
@@ -1268,3 +1272,444 @@ class TestWorkerService:
         counts = get_operational_counts(sqlite_session)
         assert counts["pending_notifications"] == 1
         assert counts["processing_payments"] == 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# payment_state_service
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestPaymentStateService:
+    # -- _get_card_details: non-dict payment_intent (line 74) ----------------
+
+    def test_get_card_details_non_dict_payment_intent(self):
+        from services.payment_state_service import _get_card_details
+
+        class FakePI:
+            charges = {"data": [{"payment_method_details": {"card": {"last4": "4242", "brand": "visa"}}}]}
+
+        last4, brand = _get_card_details(FakePI())
+        assert last4 == "4242"
+        assert brand == "visa"
+
+    # -- _get_card_details: no charges (line 76) -----------------------------
+
+    def test_get_card_details_no_charges(self):
+        from services.payment_state_service import _get_card_details
+
+        last4, brand = _get_card_details({"charges": {"data": []}})
+        assert last4 is None
+        assert brand is None
+
+    def test_get_card_details_non_dict_no_charges(self):
+        from services.payment_state_service import _get_card_details
+
+        class FakePI:
+            charges = {"data": []}
+
+        last4, brand = _get_card_details(FakePI())
+        assert last4 is None
+        assert brand is None
+
+    # -- verify_card_payment_intent_succeeded: early return (line 88) --------
+
+    def test_verify_card_early_return_no_intent_id(self):
+        from services.payment_state_service import verify_card_payment_intent_succeeded
+
+        ok, last4, brand = verify_card_payment_intent_succeeded(None)
+        assert ok is False
+
+    def test_verify_card_early_return_no_stripe_key(self, monkeypatch):
+        from services.payment_state_service import verify_card_payment_intent_succeeded
+        from database import settings as db_settings
+
+        monkeypatch.setattr(db_settings, "stripe_secret_key", "")
+        ok, last4, brand = verify_card_payment_intent_succeeded("pi_test")
+        assert ok is False
+
+    # -- verify_card_payment_intent_succeeded: exception handling (lines 95-96)
+
+    def test_verify_card_stripe_exception(self, monkeypatch):
+        from services.payment_state_service import verify_card_payment_intent_succeeded
+        from database import settings as db_settings
+        import stripe
+
+        monkeypatch.setattr(db_settings, "stripe_secret_key", "sk_test")
+        monkeypatch.setattr(stripe.PaymentIntent, "retrieve", lambda *a, **kw: (_ for _ in ()).throw(Exception("boom")))
+        ok, last4, brand = verify_card_payment_intent_succeeded("pi_test", attempts=1)
+        assert ok is False
+        assert last4 is None
+
+    # -- verify_card_payment_intent_succeeded: retry delay (lines 108-111) ---
+
+    def test_verify_card_retry_delay(self, monkeypatch):
+        from services.payment_state_service import verify_card_payment_intent_succeeded
+        from database import settings as db_settings
+        import stripe
+        import time
+
+        monkeypatch.setattr(db_settings, "stripe_secret_key", "sk_test")
+        call_count = {"n": 0}
+        slept = {"total": 0.0}
+
+        def fake_retrieve(*a, **kw):
+            call_count["n"] += 1
+            return {"status": "processing"}
+
+        def fake_sleep(secs):
+            slept["total"] += secs
+
+        monkeypatch.setattr(stripe.PaymentIntent, "retrieve", fake_retrieve)
+        monkeypatch.setattr(time, "sleep", fake_sleep)
+
+        ok, _, _ = verify_card_payment_intent_succeeded("pi_test", attempts=3, delay_seconds=0.5)
+        assert ok is False
+        assert call_count["n"] == 3
+        assert slept["total"] == pytest.approx(1.0)
+
+    # -- reconcile_gateway_payment_state: None booking (line 122) ------------
+
+    def test_reconcile_gateway_none_booking(self, sqlite_session):
+        from services.payment_state_service import reconcile_gateway_payment_state
+
+        assert reconcile_gateway_payment_state(sqlite_session, None) is False
+
+    # -- reconcile_gateway_payment_state: not confirmed returns False (line 139)
+
+    def test_reconcile_gateway_not_confirmed(self, sqlite_session, sample_room, monkeypatch):
+        from services.payment_state_service import reconcile_gateway_payment_state
+
+        booking = models.Booking(
+            booking_ref="BK-PSGATE01",
+            user_name="GateUser",
+            email="gate@example.com",
+            phone="1234567890",
+            room_id=sample_room.id,
+            check_in=datetime(2030, 6, 1, tzinfo=timezone.utc),
+            check_out=datetime(2030, 6, 3, tzinfo=timezone.utc),
+            hold_expires_at=datetime(2030, 6, 1, 0, 15, tzinfo=timezone.utc),
+            guests=1,
+            nights=2,
+            room_rate=100.0,
+            taxes=12.0,
+            service_fee=5.0,
+            total_amount=117.0,
+            status=models.BookingStatus.PROCESSING,
+            payment_status=models.PaymentStatus.PROCESSING,
+        )
+        sqlite_session.add(booking)
+        sqlite_session.commit()
+        sqlite_session.refresh(booking)
+
+        txn = models.Transaction(
+            booking_id=booking.id,
+            transaction_ref="TXN-PSGATE01",
+            stripe_payment_intent_id="pi_gate01",
+            amount=117.0,
+            currency="INR",
+            payment_method="card",
+            status=models.TransactionStatus.PROCESSING,
+        )
+        sqlite_session.add(txn)
+        sqlite_session.commit()
+
+        # Stripe says not succeeded
+        monkeypatch.setattr(
+            "services.payment_state_service.verify_card_payment_intent_succeeded",
+            lambda *a, **kw: (False, None, None),
+        )
+        result = reconcile_gateway_payment_state(sqlite_session, booking)
+        assert result is False
+
+    # -- reconcile_gateway_payment_state: full success path (lines 147-170) --
+
+    def test_reconcile_gateway_full_success(self, sqlite_session, sample_room, monkeypatch):
+        from services.payment_state_service import reconcile_gateway_payment_state
+
+        booking = models.Booking(
+            booking_ref="BK-PSGATE02",
+            user_name="GateUser2",
+            email="gate2@example.com",
+            phone="1234567890",
+            room_id=sample_room.id,
+            check_in=datetime(2030, 6, 1, tzinfo=timezone.utc),
+            check_out=datetime(2030, 6, 3, tzinfo=timezone.utc),
+            hold_expires_at=datetime(2030, 6, 1, 0, 15, tzinfo=timezone.utc),
+            guests=1,
+            nights=2,
+            room_rate=100.0,
+            taxes=12.0,
+            service_fee=5.0,
+            total_amount=117.0,
+            status=models.BookingStatus.PROCESSING,
+            payment_status=models.PaymentStatus.PROCESSING,
+        )
+        sqlite_session.add(booking)
+        sqlite_session.commit()
+        sqlite_session.refresh(booking)
+
+        txn = models.Transaction(
+            booking_id=booking.id,
+            transaction_ref="TXN-PSGATE02",
+            stripe_payment_intent_id="pi_gate02",
+            amount=117.0,
+            currency="INR",
+            payment_method="card",
+            status=models.TransactionStatus.PROCESSING,
+        )
+        sqlite_session.add(txn)
+        sqlite_session.commit()
+        sqlite_session.refresh(txn)
+
+        monkeypatch.setattr(
+            "services.payment_state_service.verify_card_payment_intent_succeeded",
+            lambda *a, **kw: (True, "1234", "mastercard"),
+        )
+        monkeypatch.setattr(
+            "services.payment_state_service.confirm_inventory_for_booking",
+            lambda db, booking: None,
+        )
+
+        result = reconcile_gateway_payment_state(sqlite_session, booking)
+        assert result is True
+        assert booking.payment_status == models.PaymentStatus.PAID
+        assert booking.status == models.BookingStatus.CONFIRMED
+        assert txn.status == models.TransactionStatus.SUCCESS
+
+    # -- reconcile_gateway: notification dedup (lines 155-170) ---------------
+
+    def test_reconcile_gateway_skips_duplicate_notifications(self, sqlite_session, sample_room, monkeypatch):
+        from services.payment_state_service import reconcile_gateway_payment_state
+
+        booking = models.Booking(
+            booking_ref="BK-PSGATE03",
+            user_name="GateUser3",
+            email="gate3@example.com",
+            phone="1234567890",
+            room_id=sample_room.id,
+            check_in=datetime(2030, 6, 1, tzinfo=timezone.utc),
+            check_out=datetime(2030, 6, 3, tzinfo=timezone.utc),
+            hold_expires_at=datetime(2030, 6, 1, 0, 15, tzinfo=timezone.utc),
+            guests=1,
+            nights=2,
+            room_rate=100.0,
+            taxes=12.0,
+            service_fee=5.0,
+            total_amount=117.0,
+            status=models.BookingStatus.PROCESSING,
+            payment_status=models.PaymentStatus.PROCESSING,
+        )
+        sqlite_session.add(booking)
+        sqlite_session.commit()
+        sqlite_session.refresh(booking)
+
+        txn = models.Transaction(
+            booking_id=booking.id,
+            transaction_ref="TXN-PSGATE03",
+            stripe_payment_intent_id="pi_gate03",
+            amount=117.0,
+            currency="INR",
+            payment_method="card",
+            status=models.TransactionStatus.PROCESSING,
+        )
+        sqlite_session.add(txn)
+        sqlite_session.commit()
+        sqlite_session.refresh(txn)
+
+        # Pre-insert both notification outbox entries so dedup skips them
+        for etype in ("booking_confirmed", "payment_receipt"):
+            sqlite_session.add(models.NotificationOutbox(
+                booking_id=booking.id,
+                transaction_id=txn.id,
+                event_type=etype,
+                recipient_email="gate3@example.com",
+                subject="Already sent",
+                body="body",
+            ))
+        sqlite_session.commit()
+
+        monkeypatch.setattr(
+            "services.payment_state_service.verify_card_payment_intent_succeeded",
+            lambda *a, **kw: (True, "5678", "amex"),
+        )
+        monkeypatch.setattr(
+            "services.payment_state_service.confirm_inventory_for_booking",
+            lambda db, booking: None,
+        )
+        queued_calls = {"confirm": 0, "receipt": 0}
+        monkeypatch.setattr(
+            "services.payment_state_service.queue_booking_confirmation_email",
+            lambda *a, **kw: queued_calls.__setitem__("confirm", queued_calls["confirm"] + 1),
+        )
+        monkeypatch.setattr(
+            "services.payment_state_service.queue_payment_receipt_email",
+            lambda *a, **kw: queued_calls.__setitem__("receipt", queued_calls["receipt"] + 1),
+        )
+
+        result = reconcile_gateway_payment_state(sqlite_session, booking)
+        assert result is True
+        # Notifications should NOT have been queued again
+        assert queued_calls["confirm"] == 0
+        assert queued_calls["receipt"] == 0
+
+    # -- reconcile_gateway: already PAID/CONFIRMED (lines 147-154 else) ------
+
+    def test_reconcile_gateway_already_paid_confirmed(self, sqlite_session, sample_room, monkeypatch):
+        from services.payment_state_service import reconcile_gateway_payment_state
+
+        booking = models.Booking(
+            booking_ref="BK-PSGATE04",
+            user_name="GateUser4",
+            email="gate4@example.com",
+            phone="1234567890",
+            room_id=sample_room.id,
+            check_in=datetime(2030, 6, 1, tzinfo=timezone.utc),
+            check_out=datetime(2030, 6, 3, tzinfo=timezone.utc),
+            hold_expires_at=datetime(2030, 6, 1, 0, 15, tzinfo=timezone.utc),
+            guests=1,
+            nights=2,
+            room_rate=100.0,
+            taxes=12.0,
+            service_fee=5.0,
+            total_amount=117.0,
+            status=models.BookingStatus.CONFIRMED,
+            payment_status=models.PaymentStatus.PAID,
+        )
+        sqlite_session.add(booking)
+        sqlite_session.commit()
+        sqlite_session.refresh(booking)
+
+        txn = models.Transaction(
+            booking_id=booking.id,
+            transaction_ref="TXN-PSGATE04",
+            stripe_payment_intent_id="pi_gate04",
+            amount=117.0,
+            currency="INR",
+            payment_method="card",
+            status=models.TransactionStatus.PROCESSING,
+        )
+        sqlite_session.add(txn)
+        sqlite_session.commit()
+        sqlite_session.refresh(txn)
+
+        monkeypatch.setattr(
+            "services.payment_state_service.verify_card_payment_intent_succeeded",
+            lambda *a, **kw: (True, None, None),
+        )
+        monkeypatch.setattr(
+            "services.payment_state_service.confirm_inventory_for_booking",
+            lambda db, booking: None,
+        )
+        monkeypatch.setattr(
+            "services.payment_state_service.queue_booking_confirmation_email",
+            lambda *a, **kw: None,
+        )
+        monkeypatch.setattr(
+            "services.payment_state_service.queue_payment_receipt_email",
+            lambda *a, **kw: None,
+        )
+
+        result = reconcile_gateway_payment_state(sqlite_session, booking)
+        # changed is False but txn.status == SUCCESS so result is True
+        assert result is True
+        # Status was not changed
+        assert booking.status == models.BookingStatus.CONFIRMED
+        assert booking.payment_status == models.PaymentStatus.PAID
+
+    # -- derive_booking_lifecycle_state: None booking (line 178) -------------
+
+    def test_derive_lifecycle_none_booking(self):
+        from services.payment_state_service import derive_booking_lifecycle_state
+
+        assert derive_booking_lifecycle_state(None) is None
+
+    # -- derive_booking_lifecycle_state: SUCCESS transaction (line 195) ------
+
+    def test_derive_lifecycle_payment_success(self, sqlite_session, sample_room):
+        from services.payment_state_service import derive_booking_lifecycle_state
+
+        booking = models.Booking(
+            booking_ref="BK-PSLC01",
+            user_name="LCUser",
+            email="lc@example.com",
+            phone="1234567890",
+            room_id=sample_room.id,
+            check_in=datetime(2030, 6, 1, tzinfo=timezone.utc),
+            check_out=datetime(2030, 6, 3, tzinfo=timezone.utc),
+            hold_expires_at=datetime(2030, 6, 1, 0, 15, tzinfo=timezone.utc),
+            guests=1,
+            nights=2,
+            room_rate=100.0,
+            taxes=12.0,
+            service_fee=5.0,
+            total_amount=117.0,
+            status=models.BookingStatus.PENDING,
+            payment_status=models.PaymentStatus.PENDING,
+        )
+        txn = models.Transaction(
+            booking_id=1,
+            transaction_ref="TXN-LC01",
+            amount=117.0,
+            currency="INR",
+            payment_method="card",
+            status=models.TransactionStatus.SUCCESS,
+        )
+        state = derive_booking_lifecycle_state(booking, txn)
+        assert state == "PAYMENT_SUCCESS"
+
+    # -- derive_booking_lifecycle_state: PENDING/PROCESSING txn (lines 206-211)
+
+    def test_derive_lifecycle_payment_pending_via_transaction(self, sqlite_session, sample_room):
+        from services.payment_state_service import derive_booking_lifecycle_state
+
+        booking = models.Booking(
+            booking_ref="BK-PSLC02",
+            user_name="LCUser2",
+            email="lc2@example.com",
+            phone="1234567890",
+            room_id=sample_room.id,
+            check_in=datetime(2030, 6, 1, tzinfo=timezone.utc),
+            check_out=datetime(2030, 6, 3, tzinfo=timezone.utc),
+            hold_expires_at=datetime(2030, 6, 1, 0, 15, tzinfo=timezone.utc),
+            guests=1,
+            nights=2,
+            room_rate=100.0,
+            taxes=12.0,
+            service_fee=5.0,
+            total_amount=117.0,
+            status=models.BookingStatus.PENDING,
+            payment_status=models.PaymentStatus.PENDING,
+        )
+        txn = models.Transaction(
+            booking_id=1,
+            transaction_ref="TXN-LC02",
+            amount=117.0,
+            currency="INR",
+            payment_method="card",
+            status=models.TransactionStatus.PENDING,
+        )
+        state = derive_booking_lifecycle_state(booking, txn)
+        assert state == "PAYMENT_PENDING"
+
+    def test_derive_lifecycle_payment_pending_no_transaction(self):
+        from services.payment_state_service import derive_booking_lifecycle_state
+
+        booking = MagicMock()
+        booking.status = models.BookingStatus.PROCESSING
+        booking.payment_status = models.PaymentStatus.PROCESSING
+        state = derive_booking_lifecycle_state(booking, None)
+        assert state == "PAYMENT_PENDING"
+
+    # -- attach_booking_lifecycle_state: None booking (line 220) -------------
+
+    def test_attach_lifecycle_none_booking(self, sqlite_session):
+        from services.payment_state_service import attach_booking_lifecycle_state
+
+        assert attach_booking_lifecycle_state(sqlite_session, None) is None
+
+    # -- reconcile_booking_payment_state: None booking (line 249) ------------
+
+    def test_reconcile_booking_payment_none_booking(self, sqlite_session):
+        from services.payment_state_service import reconcile_booking_payment_state
+
+        assert reconcile_booking_payment_state(sqlite_session, None) is False

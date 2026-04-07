@@ -9,6 +9,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from passlib.exc import PasswordValueError, UnknownHashError
 from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 import models
@@ -249,7 +250,12 @@ def my_bookings(
     bookings = (
         db.query(models.Booking)
         .options(joinedload(models.Booking.room))
-        .filter(models.Booking.email == user.email)
+        .filter(
+            or_(
+                models.Booking.email == user.email,
+                models.Booking.user_id == user.id,
+            )
+        )
         .order_by(models.Booking.created_at.desc())
         .all()
     )

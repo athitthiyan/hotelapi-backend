@@ -171,7 +171,7 @@ def test_e2e_customer_booking_to_confirmation_flow(client, db_session):
     assert "booking_confirmed" in event_types
     assert "payment_receipt" in event_types
     assert process_notifications.status_code == 200
-    assert process_notifications.json()["processed"] >= 3
+    assert process_notifications.json()["total"] >= 3
 
 
 def test_e2e_card_decline_then_retry_success_flow(client, create_booking, db_session):

@@ -762,9 +762,9 @@ class NotificationListResponse(BaseModel):
 
 
 class ProcessNotificationsResponse(BaseModel):
-    processed: int
     sent: int
     failed: int
+    total: int
 
 
 class MaintenanceRunResponse(BaseModel):

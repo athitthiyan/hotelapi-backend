@@ -148,6 +148,9 @@ def build_invoice_pdf(booking: models.Booking) -> bytes:
     """
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
+    c.setTitle("Stayvora Tax Invoice")
+    c.setAuthor("Stayvora")
+    c.setSubject(f"Invoice for {booking.booking_ref}")
 
     room = booking.room
     hotel = room.partner_hotel if room else None

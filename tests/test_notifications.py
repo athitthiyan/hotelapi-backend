@@ -223,7 +223,7 @@ def test_notification_outbox_processing_sent_and_failed_paths(client, db_session
     assert valid_booking.status_code == 201
     assert invalid_booking.status_code == 201
     assert process.status_code == 200
-    assert process.json()["processed"] >= 2
+    assert process.json()["total"] >= 2
     assert process.json()["sent"] >= 1
     assert process.json()["failed"] >= 1
     statuses = {item["recipient_email"]: item["status"] for item in outbox.json()["notifications"]}

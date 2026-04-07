@@ -16,7 +16,7 @@ def run_maintenance_cycle(
     notification_result = process_pending_notifications(db, limit=notification_limit)
     return {
         "reconciled_payments": reconciled_payments,
-        "processed_notifications": notification_result["processed"],
+        "processed_notifications": notification_result["total"],
         "sent_notifications": notification_result["sent"],
         "failed_notifications": notification_result["failed"],
     }
