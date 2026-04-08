@@ -68,7 +68,7 @@ def mark_all_notifications_read(
 ):
     db.query(models.AdminNotification).filter(
         models.AdminNotification.user_id == current_user.id,
-        models.AdminNotification.read == False,
+        ~models.AdminNotification.read,
     ).update({"read": True})
     db.commit()
     return {"status": "ok"}

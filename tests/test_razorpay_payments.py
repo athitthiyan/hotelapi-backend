@@ -20,11 +20,9 @@ import hmac
 import json
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from fastapi.testclient import TestClient
 
 import models
 from database import settings
@@ -863,9 +861,9 @@ class TestPaymentFailure:
         )
         # Create a second transaction that failed (retry scenario)
         order_id = "order_fail_retry"
-        txn = _create_transaction(db_session, booking, razorpay_order_id=order_id)
+        _ = _create_transaction(db_session, booking, razorpay_order_id=order_id)
 
-        resp = client.post(
+        _resp = client.post(
             "/payments/razorpay/payment-failure",
             json={
                 "razorpay_order_id": order_id,
@@ -966,7 +964,7 @@ class TestWebhook:
         room = _create_room(db_session)
         booking = _create_booking(db_session, room)
         order_id = "order_wh_dup"
-        txn = _create_transaction(
+        _ = _create_transaction(
             db_session, booking,
             razorpay_order_id=order_id,
             status=models.TransactionStatus.SUCCESS,
@@ -1016,7 +1014,7 @@ class TestWebhook:
         room = _create_room(db_session)
         booking = _create_booking(db_session, room)
         order_id = "order_wh_orphan"
-        txn = _create_transaction(db_session, booking, razorpay_order_id=order_id)
+        _txn = _create_transaction(db_session, booking, razorpay_order_id=order_id)
         booking_id = booking.id
 
         # Remove booking row directly (bypass ORM cascade)
@@ -1133,7 +1131,7 @@ class TestWebhook:
         booking.refund_status = models.RefundStatus.REFUND_INITIATED
         db_session.commit()
 
-        txn = _create_transaction(
+        _ = _create_transaction(
             db_session, booking,
             razorpay_order_id="order_rfnd",
             razorpay_payment_id="pay_rfnd_001",
@@ -1174,7 +1172,7 @@ class TestWebhook:
         booking.refund_status = models.RefundStatus.REFUND_INITIATED
         db_session.commit()
 
-        txn = _create_transaction(
+        _txn = _create_transaction(
             db_session, booking,
             razorpay_order_id="order_rfnd_fail",
             razorpay_payment_id="pay_rfnd_fail",
@@ -1207,7 +1205,7 @@ class TestWebhook:
         booking.refund_status = models.RefundStatus.REFUND_SUCCESS
         db_session.commit()
 
-        txn = _create_transaction(
+        _txn = _create_transaction(
             db_session, booking,
             razorpay_order_id="order_rfnd_dup",
             razorpay_payment_id="pay_rfnd_dup",
@@ -1270,7 +1268,7 @@ class TestWebhook:
         room = _create_room(db_session)
         booking = _create_booking(db_session, room)
         booking_id = booking.id
-        txn = _create_transaction(
+        _txn = _create_transaction(
             db_session, booking,
             razorpay_order_id="order_rfnd_orphan",
             razorpay_payment_id="pay_rfnd_orphan",
@@ -1503,7 +1501,7 @@ class TestHoldExpiry:
             hold_expires_at=_utc_now() - timedelta(minutes=3),
         )
         order_id = "order_wh_expired"
-        txn = _create_transaction(db_session, booking, razorpay_order_id=order_id)
+        _ = _create_transaction(db_session, booking, razorpay_order_id=order_id)
 
         payload = _webhook_payload("payment.captured", {
             "id": "pay_wh_expired",
@@ -1533,7 +1531,7 @@ class TestHoldExpiry:
             hold_expires_at=_utc_now() + timedelta(minutes=5),  # still active
         )
         order_id = "order_active_hold"
-        txn = _create_transaction(db_session, booking, razorpay_order_id=order_id)
+        _ = _create_transaction(db_session, booking, razorpay_order_id=order_id)
 
         payload = _webhook_payload("payment.captured", {
             "id": "pay_active_hold",
@@ -1561,7 +1559,7 @@ class TestHoldExpiry:
         db_session.commit()
 
         order_id = "order_no_hold"
-        txn = _create_transaction(db_session, booking, razorpay_order_id=order_id)
+        _txn = _create_transaction(db_session, booking, razorpay_order_id=order_id)
 
         payload = _webhook_payload("payment.captured", {
             "id": "pay_no_hold",
@@ -1587,7 +1585,7 @@ class TestHoldExpiry:
             hold_expires_at=_utc_now() - timedelta(minutes=5),
         )
         order_id = "order_wh_confirmed_expired"
-        txn = _create_transaction(
+        _txn = _create_transaction(
             db_session, booking,
             razorpay_order_id=order_id,
             status=models.TransactionStatus.PENDING,
@@ -1624,7 +1622,7 @@ class TestRefund:
             status=models.BookingStatus.CONFIRMED,
             payment_status=models.PaymentStatus.PAID,
         )
-        txn = _create_transaction(
+        _txn = _create_transaction(
             db_session, booking,
             razorpay_payment_id="pay_refund_full",
             status=models.TransactionStatus.SUCCESS,
@@ -1657,7 +1655,7 @@ class TestRefund:
             payment_status=models.PaymentStatus.PAID,
             total_amount=5000.0,
         )
-        txn = _create_transaction(
+        _txn = _create_transaction(
             db_session, booking,
             razorpay_payment_id="pay_refund_partial",
             status=models.TransactionStatus.SUCCESS,
@@ -1724,7 +1722,7 @@ class TestRefund:
             payment_status=models.PaymentStatus.PAID,
             status=models.BookingStatus.CONFIRMED,
         )
-        txn = _create_transaction(
+        _txn = _create_transaction(
             db_session, booking,
             razorpay_payment_id="pay_refund_zero",
             status=models.TransactionStatus.SUCCESS,
@@ -1745,7 +1743,7 @@ class TestRefund:
             status=models.BookingStatus.CONFIRMED,
             total_amount=1000.0,
         )
-        txn = _create_transaction(
+        _txn = _create_transaction(
             db_session, booking,
             razorpay_payment_id="pay_refund_exceed",
             status=models.TransactionStatus.SUCCESS,
@@ -1765,7 +1763,7 @@ class TestRefund:
             payment_status=models.PaymentStatus.PAID,
             status=models.BookingStatus.CONFIRMED,
         )
-        txn = _create_transaction(
+        _txn = _create_transaction(
             db_session, booking,
             razorpay_payment_id="pay_refund_apifail",
             status=models.TransactionStatus.SUCCESS,
@@ -1801,7 +1799,7 @@ class TestRefund:
             status=models.BookingStatus.CONFIRMED,
         )
         # Transaction without payment_id
-        txn = _create_transaction(
+        _txn = _create_transaction(
             db_session, booking,
             razorpay_payment_id=None,
             status=models.TransactionStatus.SUCCESS,
@@ -1875,7 +1873,7 @@ class TestPaymentStatus:
     def test_status_with_transaction(self, client, db_session):
         room = _create_room(db_session)
         booking = _create_booking(db_session, room)
-        txn = _create_transaction(db_session, booking, razorpay_order_id="order_status_001")
+        _txn = _create_transaction(db_session, booking, razorpay_order_id="order_status_001")
 
         resp = client.get(f"/payments/razorpay/status/{booking.id}")
         assert resp.status_code == 200
@@ -1890,7 +1888,7 @@ class TestPaymentStatus:
             status=models.BookingStatus.CONFIRMED,
             payment_status=models.PaymentStatus.PAID,
         )
-        txn = _create_transaction(
+        _txn = _create_transaction(
             db_session, booking,
             status=models.TransactionStatus.SUCCESS,
             razorpay_payment_id="pay_status_confirmed",

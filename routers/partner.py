@@ -5,14 +5,6 @@ import uuid
 import enum
 from datetime import date, datetime, timedelta, timezone
 
-def _broadcast(event_type: str, payload: dict, source: str = "partner"):
-    """Fire-and-forget WebSocket broadcast for real-time sync."""
-    try:
-        from main import broadcast_event
-        broadcast_event(event_type, payload, source)
-    except Exception:
-        pass
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, joinedload
@@ -33,6 +25,15 @@ from services.rate_limit_service import enforce_rate_limit
 router = APIRouter(prefix="/partner", tags=["Partner"])
 
 DEFAULT_COMMISSION_RATE = 0.15
+
+
+def _broadcast(event_type: str, payload: dict, source: str = "partner"):
+    """Fire-and-forget WebSocket broadcast for real-time sync."""
+    try:
+        from main import broadcast_event
+        broadcast_event(event_type, payload, source)
+    except Exception:
+        pass
 
 
 def _mask_account_number(account_number: str | None) -> str | None:

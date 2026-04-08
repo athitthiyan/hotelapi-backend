@@ -3,15 +3,6 @@ import string
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-# Late-import broadcast_event to avoid circular imports
-def _broadcast(event_type: str, payload: dict, source: str = "system"):
-    """Fire-and-forget WebSocket broadcast for real-time sync."""
-    try:
-        from main import broadcast_event
-        broadcast_event(event_type, payload, source)
-    except Exception:
-        pass  # Non-critical: sync is best-effort
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, or_, func
@@ -64,6 +55,16 @@ VISIBLE_ACTIVE_HOLD_LIFECYCLE_STATES = {
     "PAYMENT_PENDING",
     "PAYMENT_COOLDOWN",
 }
+
+
+# Late-import broadcast_event to avoid circular imports
+def _broadcast(event_type: str, payload: dict, source: str = "system"):
+    """Fire-and-forget WebSocket broadcast for real-time sync."""
+    try:
+        from main import broadcast_event
+        broadcast_event(event_type, payload, source)
+    except Exception:
+        pass  # Non-critical: sync is best-effort
 
 
 def resolve_authenticated_booking_user(

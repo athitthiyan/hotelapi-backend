@@ -84,10 +84,11 @@ def verify_card_payment_intent_succeeded(
     attempts: int = 1,
     delay_seconds: float = 0.0,
 ) -> tuple[bool, Optional[str], Optional[str]]:
-    if not payment_intent_id or not settings.stripe_secret_key:
+    if not payment_intent_id:
         return False, None, None
 
-    stripe.api_key = settings.stripe_secret_key
+    if settings.stripe_secret_key:
+        stripe.api_key = settings.stripe_secret_key
     safe_attempts = max(1, attempts)
     for attempt in range(safe_attempts):
         try:

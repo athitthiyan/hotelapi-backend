@@ -3,14 +3,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-def _broadcast(event_type: str, payload: dict, source: str = "system"):
-    """Fire-and-forget WebSocket broadcast for real-time sync."""
-    try:
-        from main import broadcast_event
-        broadcast_event(event_type, payload, source)
-    except Exception:
-        pass
-
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import or_
@@ -54,6 +46,15 @@ FAILED_PAYMENT_BLOCK_SECONDS = 5 * 60
 FAILED_PAYMENT_ESCALATED_BLOCK_THRESHOLD = 10
 FAILED_PAYMENT_ESCALATED_BLOCK_SECONDS = 15 * 60
 REFUND_SETTLEMENT_DAYS = 5
+
+
+def _broadcast(event_type: str, payload: dict, source: str = "system"):
+    """Fire-and-forget WebSocket broadcast for real-time sync."""
+    try:
+        from main import broadcast_event
+        broadcast_event(event_type, payload, source)
+    except Exception:
+        pass
 
 
 def _notification_exists(
@@ -545,10 +546,11 @@ def verify_card_payment_intent_succeeded(
     attempts: int = 1,
     delay_seconds: float = 0.0,
 ) -> tuple[bool, Optional[str], Optional[str]]:
-    if not payment_intent_id or not settings.stripe_secret_key:
+    if not payment_intent_id:
         return False, None, None
 
-    stripe.api_key = settings.stripe_secret_key
+    if settings.stripe_secret_key:
+        stripe.api_key = settings.stripe_secret_key
     safe_attempts = max(1, attempts)
     for attempt in range(safe_attempts):
         try:

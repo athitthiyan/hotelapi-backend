@@ -188,7 +188,6 @@ async def create_razorpay_order(
     Supports: upi, gpay, phonepe, card, netbanking, wallet, mock.
     """
     booking = _get_booking_for_payment(db, booking_id)
-    client = _get_razorpay_client()
 
     # Normalise method
     method = payment_method.lower().replace("phonepay", "phonepe")
@@ -221,6 +220,7 @@ async def create_razorpay_order(
     if method == "mock":
         razorpay_order_id = f"order_mock_{secrets.token_hex(8)}"
     else:
+        client = _get_razorpay_client()
         try:
             order = client.order.create({
                 "amount": amount_paise,

@@ -364,9 +364,7 @@ def test_update_profile_rejects_empty_phone(client, db_session):
 
 def test_verify_jwks_token_import_error():
     """jose not installed error (line 491)."""
-    import asyncio
     from unittest.mock import patch
-    from routers.auth import _verify_jwks_token
 
     with patch.dict("sys.modules", {"jose": None}):
         # Reimport won't help since the function does a local import;
@@ -662,7 +660,7 @@ def test_send_verification_email_sends_for_unverified_user(client, db_session):
 # ---------------------------------------------------------------------------
 
 def test_verify_email_with_valid_token(client, db_session):
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     # Use naive datetime so SQLite can round-trip it without losing timezone info
     future = datetime.utcnow() + timedelta(hours=24)
