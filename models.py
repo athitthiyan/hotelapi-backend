@@ -10,6 +10,7 @@ from sqlalchemy import (
     Text,
     Enum,
     Date,
+    JSON,
     UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
@@ -134,6 +135,10 @@ class PartnerHotel(Base):
     state = Column(String(100))
     country = Column(String(100), default="India", nullable=False)
     postal_code = Column(String(20))
+    latitude = Column(Float)
+    longitude = Column(Float)
+    formatted_address = Column(String(500))
+    location_verified = Column(Boolean, default=False, nullable=False)
     description = Column(Text)
     check_in_time = Column(String(20), default="14:00")
     check_out_time = Column(String(20), default="11:00")
@@ -220,6 +225,9 @@ class Booking(Base):
     check_out = Column(DateTime(timezone=True), nullable=False)
     hold_expires_at = Column(DateTime(timezone=True))
     guests = Column(Integer, default=1)
+    adults = Column(Integer, default=1)
+    children = Column(Integer, default=0)
+    infants = Column(Integer, default=0)
     nights = Column(Integer, nullable=False)
     room_rate = Column(Float, nullable=False)
     taxes = Column(Float, default=0.0)
@@ -387,6 +395,21 @@ class AuditLog(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     actor = relationship("User")
+
+
+class AdminNotification(Base):
+    __tablename__ = "admin_notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    type = Column(String(50), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    message = Column(Text, nullable=False)
+    read = Column(Boolean, default=False, nullable=False, index=True)
+    metadata_json = Column(JSON)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User")
 
 
 class PartnerPayout(Base):

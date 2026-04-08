@@ -104,13 +104,19 @@ class TestCreateOrder:
         )
         assert resp.status_code == 422
 
-    def test_create_order_normalises_phonepay(self, client, room_id, db_session):
+    @patch("routers.razorpay_payments._get_razorpay_client")
+    def test_create_order_normalises_phonepay(self, mock_client_fn, client, room_id, db_session):
+        mock_client = MagicMock()
+        mock_client.order.create.return_value = {"id": "order_live_phonepe"}
+        mock_client_fn.return_value = mock_client
+
         bk = _create_booking(client, room_id)
         resp = client.post(
             "/payments/razorpay/create-order",
             json={"booking_id": bk["id"], "payment_method": "phonepay"},
         )
         assert resp.status_code == 200
+        assert resp.json()["order_id"] == "order_live_phonepe"
         txn = db_session.query(models.Transaction).filter_by(
             booking_id=bk["id"]
         ).first()

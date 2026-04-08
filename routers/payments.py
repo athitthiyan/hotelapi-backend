@@ -3,6 +3,14 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+def _broadcast(event_type: str, payload: dict, source: str = "system"):
+    """Fire-and-forget WebSocket broadcast for real-time sync."""
+    try:
+        from main import broadcast_event
+        broadcast_event(event_type, payload, source)
+    except Exception:
+        pass
+
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import or_
@@ -206,6 +214,14 @@ def set_refund_initiated(
     booking.refund_gateway_reference = gateway_reference or booking.refund_gateway_reference or f"RFND-{uuid.uuid4().hex[:10].upper()}"
     booking.status = models.BookingStatus.CANCELLED
 
+    # ── Real-time broadcast: refund initiated ──
+    _broadcast("refund-initiated", {
+        "booking_id": booking.id,
+        "booking_ref": booking.booking_ref,
+        "room_id": booking.room_id,
+        "refund_amount": booking.refund_amount,
+    }, source="system")
+
 
 def set_refund_processing(
     booking: models.Booking,
@@ -249,6 +265,14 @@ def set_refund_success(
     booking.status = models.BookingStatus.CANCELLED
     transaction.status = models.TransactionStatus.REFUNDED
     transaction.failure_reason = None
+
+    # ── Real-time broadcast: refund completed ──
+    _broadcast("refund-completed", {
+        "booking_id": booking.id,
+        "booking_ref": booking.booking_ref,
+        "room_id": booking.room_id,
+        "refund_amount": booking.refund_amount,
+    }, source="system")
 
 
 def set_refund_reversed(
@@ -476,6 +500,21 @@ def apply_processing_state(booking: models.Booking) -> None:
 def apply_paid_state(booking: models.Booking) -> None:
     booking.payment_status = models.PaymentStatus.PAID
     booking.status = models.BookingStatus.CONFIRMED
+
+    # ── Real-time broadcast: payment completed + booking confirmed ──
+    _broadcast("payment-completed", {
+        "booking_id": booking.id,
+        "booking_ref": booking.booking_ref,
+        "room_id": booking.room_id,
+        "total_amount": booking.total_amount,
+    }, source="system")
+
+    _broadcast("booking-confirmed", {
+        "booking_id": booking.id,
+        "booking_ref": booking.booking_ref,
+        "room_id": booking.room_id,
+        "status": "confirmed",
+    }, source="system")
 
 
 def apply_failed_state(booking: models.Booking) -> None:
@@ -1596,7 +1635,15 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                         transaction_id=transaction.id,
                         event_type="payment_failed",
                     ):
-                        queue_payment_failure_email(db, booking, transaction)
+                        queue_payment_failure_email(
+                            db,
+                            booking,
+                            transaction,
+                            payment_intent.get("last_payment_error", {}).get(
+                                "message",
+                                "Payment failed via Stripe webhook",
+                            ),
+                        )
 
                 db.commit()
                 write_payment_audit(

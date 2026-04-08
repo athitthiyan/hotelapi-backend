@@ -3,6 +3,15 @@ import string
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+# Late-import broadcast_event to avoid circular imports
+def _broadcast(event_type: str, payload: dict, source: str = "system"):
+    """Fire-and-forget WebSocket broadcast for real-time sync."""
+    try:
+        from main import broadcast_event
+        broadcast_event(event_type, payload, source)
+    except Exception:
+        pass  # Non-critical: sync is best-effort
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, or_, func
@@ -351,7 +360,9 @@ def create_booking(
         )
 
     # Check if guest count exceeds room capacity
-    if booking_data.guests > room.max_guests:
+    # Use the larger of guests vs adults+children for backward compatibility
+    effective_guests = max(booking_data.guests, booking_data.adults + booking_data.children)
+    if effective_guests > room.max_guests:
         raise booking_error(
             status_code=400,
             code=error_codes.GUEST_CAPACITY_EXCEEDED,
@@ -425,7 +436,10 @@ def create_booking(
         check_in=check_in,
         check_out=check_out,
         hold_expires_at=utc_now() + timedelta(minutes=BOOKING_HOLD_MINUTES),
-        guests=booking_data.guests,
+        guests=max(booking_data.guests, booking_data.adults + booking_data.children),
+        adults=booking_data.adults,
+        children=booking_data.children,
+        infants=booking_data.infants,
         nights=nights,
         room_rate=room_rate,
         taxes=taxes,
@@ -454,6 +468,21 @@ def create_booking(
     queue_booking_hold_email(db, db_booking)
     db.commit()
     db.refresh(db_booking)
+
+    # ── Real-time broadcast: booking created ──
+    _broadcast("booking-created", {
+        "booking_id": db_booking.id,
+        "booking_ref": db_booking.booking_ref,
+        "room_id": db_booking.room_id,
+        "status": db_booking.status.value if hasattr(db_booking.status, 'value') else str(db_booking.status),
+        "total_amount": db_booking.total_amount,
+    }, source="customer")
+
+    _broadcast("inventory-updated", {
+        "room_id": db_booking.room_id,
+        "action": "lock",
+        "booking_id": db_booking.id,
+    }, source="system")
 
     return get_booking_or_404(db, db_booking.id)
 
@@ -792,6 +821,20 @@ def _cancel_booking(booking_id: int, db: Session) -> models.Booking:
     queue_booking_cancellation_email(db, booking)
     db.commit()
     db.refresh(booking)
+
+    # ── Real-time broadcast: booking cancelled ──
+    _broadcast("booking-cancelled", {
+        "booking_id": booking.id,
+        "booking_ref": booking.booking_ref,
+        "room_id": booking.room_id,
+    }, source="customer")
+
+    _broadcast("inventory-updated", {
+        "room_id": booking.room_id,
+        "action": "release",
+        "booking_id": booking.id,
+    }, source="system")
+
     return booking
 
 

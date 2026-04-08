@@ -1,12 +1,15 @@
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
+from typing import Set
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
+from jose import jwt, JWTError
 
 import models
 from database import Base, SessionLocal, engine, settings, validate_runtime_configuration
@@ -81,7 +84,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="HotelAPI - Stayvora Backend",
-    description="Unified backend for Stayvora booking, PayFlow payments, InsightBoard operations, and partner workflows",
+    description="Unified backend for Stayvora booking, Stayvora Pay payments, Stayvora Admin operations, and partner workflows",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -93,6 +96,9 @@ app = FastAPI(
 _HARDCODED_ORIGINS = [
     "https://stayvora.co.in",
     "https://www.stayvora.co.in",
+    "https://pay.stayvora.co.in",
+    "https://admin.stayvora.co.in",
+    "https://partner.stayvora.co.in",
     "https://stayease-booking-app.vercel.app",
     "https://stayease-booking-app-git-main-athitthiyans-projects.vercel.app",
     "https://payflow-payment-app.vercel.app",
@@ -155,6 +161,147 @@ def health_check():
     }
 
 
+# ═══ Platform Sync — WebSocket Event Hub ═══════════════════════════════════
+# Broadcasts real-time events to all connected frontends (customer, partner, admin).
+# Event flow: Partner/Admin action → API save → broadcast_event() → all clients refresh.
+
+class ConnectionManager:
+    """Manages WebSocket connections for real-time platform sync, grouped by user role."""
+
+    # Event routing rules: which roles can receive which event types
+    EVENT_ROUTING = {
+        "customer": {
+            "booking-created",
+            "booking-confirmed",
+            "booking-cancelled",
+            "booking-expired",
+            "payment-completed",
+            "refund-initiated",
+            "refund-completed",
+        },
+        "partner": {
+            "room-updated",
+            "price-updated",
+            "availability-updated",
+            "booking-created",
+            "booking-confirmed",
+            "booking-cancelled",
+            "inventory-updated",
+            "payout-settled",
+        },
+        "admin": None,  # Admin receives ALL events
+    }
+
+    def __init__(self):
+        self.connections_by_role: dict[str, Set[WebSocket]] = {
+            "customer": set(),
+            "partner": set(),
+            "admin": set(),
+        }
+
+    async def connect(self, websocket: WebSocket, role: str = "customer"):
+        """Accept connection and group by role."""
+        await websocket.accept()
+        # Normalize role; default to customer if unrecognized
+        role = role if role in self.connections_by_role else "customer"
+        self.connections_by_role[role].add(websocket)
+        total = sum(len(conns) for conns in self.connections_by_role.values())
+        logger.info("WebSocket client connected with role '%s'. Total: %d", role, total)
+
+    def disconnect(self, websocket: WebSocket, role: str = "customer"):
+        """Remove connection from role group."""
+        role = role if role in self.connections_by_role else "customer"
+        self.connections_by_role[role].discard(websocket)
+        total = sum(len(conns) for conns in self.connections_by_role.values())
+        logger.info("WebSocket client disconnected. Total: %d", total)
+
+    def _should_receive_event(self, role: str, event_type: str) -> bool:
+        """Check if a role can receive this event type."""
+        if role == "admin":
+            return True  # Admin receives all events
+        allowed = self.EVENT_ROUTING.get(role, set())
+        return event_type in allowed if allowed else False
+
+    async def broadcast(self, event: dict):
+        """Broadcast a platform event only to roles that should receive it."""
+        event_type = event.get("type", "unknown")
+        message = json.dumps(event)
+        disconnected = {role: set() for role in self.connections_by_role}
+
+        for role, connections in self.connections_by_role.items():
+            if not self._should_receive_event(role, event_type):
+                continue  # Skip roles that shouldn't receive this event
+
+            for connection in connections:
+                try:
+                    await connection.send_text(message)
+                except Exception:
+                    disconnected[role].add(connection)
+
+        # Clean up disconnected connections
+        for role, conns in disconnected.items():
+            for conn in conns:
+                self.connections_by_role[role].discard(conn)
+
+ws_manager = ConnectionManager()
+
+def broadcast_event(event_type: str, payload: dict, source: str = "system"):
+    """Fire-and-forget broadcast helper for sync routes."""
+    import datetime
+    event = {
+        "type": event_type,
+        "payload": payload,
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "source": source,
+    }
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.ensure_future(ws_manager.broadcast(event))
+        else:
+            loop.run_until_complete(ws_manager.broadcast(event))
+    except RuntimeError:
+        pass  # No event loop available (test/CLI context)
+
+@app.websocket("/ws/events")
+async def websocket_events(websocket: WebSocket):
+    """WebSocket endpoint for real-time platform synchronization with JWT authentication."""
+    token = websocket.query_params.get("token")
+    user_role = "customer"  # default role
+
+    if not token:
+        await websocket.close(code=4001, reason="Missing token")
+        return
+
+    try:
+        # Verify JWT using the same secret and algorithm as auth.py
+        payload = jwt.decode(token, settings.secret_key, algorithms=[auth.ALGORITHM])
+        # Determine user role from JWT payload
+        if payload.get("is_admin"):
+            user_role = "admin"
+        elif payload.get("is_partner"):
+            user_role = "partner"
+        else:
+            user_role = "customer"
+    except JWTError:
+        await websocket.close(code=4001, reason="Invalid token")
+        return
+
+    await ws_manager.connect(websocket, role=user_role)
+    try:
+        while True:
+            # Keep connection alive; clients can also send events
+            data = await websocket.receive_text()
+            try:
+                event = json.loads(data)
+                event.setdefault("source", "client")
+                await ws_manager.broadcast(event)
+            except (json.JSONDecodeError, TypeError):
+                pass
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket, role=user_role)
+
+
 @app.post("/seed", tags=["Dev"])
 def seed_database(db=None):
     """Seed the database with launch-ready starter rooms and operator accounts."""
@@ -194,6 +341,8 @@ def seed_database(db=None):
                 "location": "Manhattan, New York",
                 "city": "New York",
                 "country": "USA",
+                "latitude": 40.7580,
+                "longitude": -73.9855,
                 "max_guests": 4,
                 "beds": 2,
                 "bathrooms": 3,
@@ -230,6 +379,8 @@ def seed_database(db=None):
                 "location": "Bali, Indonesia",
                 "city": "Bali",
                 "country": "Indonesia",
+                "latitude": -8.4095,
+                "longitude": 115.1889,
                 "max_guests": 2,
                 "beds": 1,
                 "bathrooms": 2,
@@ -259,6 +410,8 @@ def seed_database(db=None):
                 "location": "Zermatt, Switzerland",
                 "city": "Zermatt",
                 "country": "Switzerland",
+                "latitude": 46.0207,
+                "longitude": 7.7491,
                 "max_guests": 2,
                 "beds": 1,
                 "bathrooms": 1,
@@ -287,6 +440,8 @@ def seed_database(db=None):
                 "location": "Gion District, Kyoto",
                 "city": "Kyoto",
                 "country": "Japan",
+                "latitude": 35.0036,
+                "longitude": 135.7756,
                 "max_guests": 2,
                 "beds": 1,
                 "bathrooms": 1,
@@ -316,6 +471,8 @@ def seed_database(db=None):
                 "location": "City Centre, London",
                 "city": "London",
                 "country": "UK",
+                "latitude": 51.5074,
+                "longitude": -0.1278,
                 "max_guests": 2,
                 "beds": 1,
                 "bathrooms": 1,
@@ -344,6 +501,8 @@ def seed_database(db=None):
                 "location": "Dubai, UAE",
                 "city": "Dubai",
                 "country": "UAE",
+                "latitude": 25.2048,
+                "longitude": 55.2708,
                 "max_guests": 2,
                 "beds": 1,
                 "bathrooms": 2,
@@ -456,6 +615,8 @@ def seed_database(db=None):
                 location="Near Marina Beach",
                 city="Chennai",
                 country="India",
+                latitude=13.0500,
+                longitude=80.2824,
                 max_guests=3,
                 beds=2,
                 bathrooms=1,
@@ -481,5 +642,92 @@ def seed_database(db=None):
             "partner_name": settings.seed_partner_name,
             "partner_hotel_name": settings.seed_partner_hotel_name,
         }
+    finally:
+        db.close()
+
+
+# ── Geocoding API endpoint for partner onboarding ────────────────────────
+@app.post("/api/geocode", tags=["Location"])
+async def geocode_address(payload: dict):
+    """
+    Resolve an address string to latitude/longitude coordinates.
+    Uses OpenStreetMap Nominatim as the geocoding provider (via stdlib urllib).
+    Frontend sends: { "address": "12 Marina Beach Road, Chennai, Tamil Nadu, India" }
+    Returns: { "latitude": 13.05, "longitude": 80.28, "formatted_address": "...", "found": true }
+    """
+    import asyncio
+    import json as _json
+    import urllib.request
+    import urllib.parse
+
+    address = payload.get("address", "").strip()
+    if not address:
+        return {"found": False, "error": "Address is required"}
+
+    def _fetch_nominatim(addr: str):
+        params = urllib.parse.urlencode({
+            "q": addr,
+            "format": "json",
+            "limit": 1,
+            "addressdetails": 1,
+        })
+        url = f"https://nominatim.openstreetmap.org/search?{params}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Stayvora/1.0 (hotel-platform)"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return _json.loads(resp.read().decode())
+
+    try:
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(None, _fetch_nominatim, address)
+
+        if not results:
+            return {"found": False, "error": "Could not geocode this address. Please try a more specific address."}
+
+        result = results[0]
+        return {
+            "found": True,
+            "latitude": float(result["lat"]),
+            "longitude": float(result["lon"]),
+            "formatted_address": result.get("display_name", address),
+        }
+    except Exception as exc:
+        logger.warning("Geocoding failed for '%s': %s", address, exc)
+        return {"found": False, "error": "Geocoding service temporarily unavailable. You can adjust the pin manually."}
+
+
+# ── Backfill coordinates for rooms that were seeded without them ──────────
+CITY_COORDINATES = {
+    "new york": (40.7580, -73.9855),
+    "bali": (-8.4095, 115.1889),
+    "zermatt": (46.0207, 7.7491),
+    "kyoto": (35.0036, 135.7756),
+    "london": (51.5074, -0.1278),
+    "dubai": (25.2048, 55.2708),
+    "chennai": (13.0500, 80.2824),
+}
+
+
+@app.post("/seed/backfill-coordinates", tags=["Dev"])
+def backfill_room_coordinates():
+    """Patch latitude/longitude on existing rooms that are missing coordinates."""
+    import random
+    db = SessionLocal()
+    try:
+        rooms = db.query(models.Room).filter(
+            models.Room.latitude.is_(None)
+        ).all()
+
+        updated = 0
+        for room in rooms:
+            city_key = (room.city or "").strip().lower()
+            if city_key in CITY_COORDINATES:
+                lat, lng = CITY_COORDINATES[city_key]
+                # Add slight offset per room so markers don't stack exactly
+                room.latitude = lat + random.uniform(-0.008, 0.008)
+                room.longitude = lng + random.uniform(-0.008, 0.008)
+                updated += 1
+
+        db.commit()
+        return {"message": f"Backfilled coordinates for {updated} rooms", "updated": updated}
     finally:
         db.close()

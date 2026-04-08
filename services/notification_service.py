@@ -67,11 +67,26 @@ def queue_booking_hold_email(db, booking: models.Booking) -> models.Notification
         booking_id=booking.id,
         subject=f"Your reservation hold is ready — {booking.booking_ref}",
         body=(
-            f"Hi {booking.user_name},\n\n"
-            f"Your reservation hold for booking {booking.booking_ref} is active.\n"
-            f"Hold expires: {booking.hold_expires_at} UTC.\n\n"
-            "Complete payment before the timer runs out to confirm your stay.\n\n"
-            "— Stayvora Team"
+            f'<div style="font-family: Inter, -apple-system, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff;">'
+            f'<div style="background: #0f2033; padding: 32px; text-align: center;">'
+            f'<h1 style="color: #d6b86b; font-family: Playfair Display, Georgia, serif; font-size: 28px; margin: 0;">Stayvora</h1>'
+            f'<p style="color: rgba(255,255,255,0.6); font-size: 13px; margin: 8px 0 0;">Premium Hotel Bookings</p>'
+            f'</div>'
+            f'<div style="padding: 40px 32px;">'
+            f'<h2 style="color: #0f2033; font-size: 22px; margin: 0 0 16px;">Hold Reserved!</h2>'
+            f'<p style="color: #4a5568; line-height: 1.7;">Hi {booking.user_name},</p>'
+            f'<p style="color: #4a5568; line-height: 1.7;">Your reservation hold is active and ready for payment.</p>'
+            f'<div style="background: #f7f5ef; border-radius: 12px; padding: 24px; margin: 24px 0; border-left: 4px solid #d6b86b;">'
+            f'<p style="margin: 0 0 8px; color: #718096; font-size: 13px;">HOLD DETAILS</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Ref:</strong> {booking.booking_ref}</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Expires:</strong> {booking.hold_expires_at} UTC</p>'
+            f'</div>'
+            f'<p style="color: #4a5568; line-height: 1.7;">Complete payment before the hold expires to confirm your stay.</p>'
+            f'</div>'
+            f'<div style="background: #0f2033; padding: 24px 32px; text-align: center;">'
+            f'<p style="color: rgba(255,255,255,0.5); font-size: 12px; margin: 0;">Stayvora | support@stayvora.co.in | www.stayvora.co.in</p>'
+            f'</div>'
+            f'</div>'
         ),
     )
 
@@ -98,20 +113,32 @@ def queue_booking_confirmation_email(
         transaction_id=transaction.id,
         subject=f"Booking Confirmed — {booking.booking_ref} | Your Invoice is Attached",
         body=(
-            f"Hi {booking.user_name},\n\n"
-            f"Great news! Your booking is CONFIRMED.\n\n"
-            f"Booking Ref   : {booking.booking_ref}\n"
-            f"Transaction   : {transaction.transaction_ref}\n"
-            f"Hotel         : {booking.room.hotel_name if booking.room else 'Stayvora Hotel'}\n"
-            f"Room          : {booking.room.room_type_name if booking.room and booking.room.room_type_name else 'Room'}\n"
-            f"Check-in      : {booking.check_in}\n"
-            f"Check-out     : {booking.check_out}\n"
-            f"Guests        : {booking.guests}\n"
-            f"Total Paid    : INR {booking.total_amount:.2f}\n\n"
-            "Your tax invoice is attached to this email as a PDF.\n"
-            "You can also download it anytime from the Stayvora app.\n\n"
-            "We hope you have a wonderful stay!\n\n"
-            "— Stayvora Team"
+            f'<div style="font-family: Inter, -apple-system, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff;">'
+            f'<div style="background: #0f2033; padding: 32px; text-align: center;">'
+            f'<h1 style="color: #d6b86b; font-family: Playfair Display, Georgia, serif; font-size: 28px; margin: 0;">Stayvora</h1>'
+            f'<p style="color: rgba(255,255,255,0.6); font-size: 13px; margin: 8px 0 0;">Premium Hotel Bookings</p>'
+            f'</div>'
+            f'<div style="padding: 40px 32px;">'
+            f'<h2 style="color: #0f2033; font-size: 22px; margin: 0 0 16px;">Booking Confirmed!</h2>'
+            f'<p style="color: #4a5568; line-height: 1.7;">Hi {booking.user_name},</p>'
+            f'<p style="color: #4a5568; line-height: 1.7;">Great news — your booking is confirmed.</p>'
+            f'<div style="background: #f7f5ef; border-radius: 12px; padding: 24px; margin: 24px 0; border-left: 4px solid #d6b86b;">'
+            f'<p style="margin: 0 0 8px; color: #718096; font-size: 13px;">BOOKING DETAILS</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Ref:</strong> {booking.booking_ref}</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Hotel:</strong> {booking.room.hotel_name if booking.room else "Stayvora Hotel"}</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Room:</strong> {booking.room.room_type_name if booking.room and booking.room.room_type_name else "Room"}</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Check-in:</strong> {booking.check_in}</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Check-out:</strong> {booking.check_out}</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Guests:</strong> {booking.guests}</p>'
+            f'<p style="margin: 8px 0 0; color: #0f2033; font-size: 18px;"><strong>Total: INR {booking.total_amount:.2f}</strong></p>'
+            f'</div>'
+            f'<p style="color: #4a5568; line-height: 1.7;">Your tax invoice is attached. You can also download it from the Stayvora app.</p>'
+            f'<p style="color: #4a5568; line-height: 1.7;">We hope you have a wonderful stay!</p>'
+            f'</div>'
+            f'<div style="background: #0f2033; padding: 24px 32px; text-align: center;">'
+            f'<p style="color: rgba(255,255,255,0.5); font-size: 12px; margin: 0;">Stayvora | support@stayvora.co.in | www.stayvora.co.in</p>'
+            f'</div>'
+            f'</div>'
         ),
         attachment_pdf=pdf_bytes,
         attachment_filename=filename,
@@ -129,12 +156,27 @@ def queue_payment_receipt_email(
         transaction_id=transaction.id,
         subject=f"Payment receipt — {booking.booking_ref}",
         body=(
-            f"Hi {booking.user_name},\n\n"
-            f"We received your payment of INR {transaction.amount:.2f}.\n\n"
-            f"Booking ref     : {booking.booking_ref}\n"
-            f"Transaction ref : {transaction.transaction_ref}\n"
-            f"Payment method  : {transaction.payment_method or 'Card'}\n\n"
-            "— Stayvora Team"
+            f'<div style="font-family: Inter, -apple-system, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff;">'
+            f'<div style="background: #0f2033; padding: 32px; text-align: center;">'
+            f'<h1 style="color: #d6b86b; font-family: Playfair Display, Georgia, serif; font-size: 28px; margin: 0;">Stayvora</h1>'
+            f'<p style="color: rgba(255,255,255,0.6); font-size: 13px; margin: 8px 0 0;">Premium Hotel Bookings</p>'
+            f'</div>'
+            f'<div style="padding: 40px 32px;">'
+            f'<h2 style="color: #0f2033; font-size: 22px; margin: 0 0 16px;">Payment Received</h2>'
+            f'<p style="color: #4a5568; line-height: 1.7;">Hi {booking.user_name},</p>'
+            f'<p style="color: #4a5568; line-height: 1.7;">We have received your payment.</p>'
+            f'<div style="background: #f7f5ef; border-radius: 12px; padding: 24px; margin: 24px 0; border-left: 4px solid #d6b86b;">'
+            f'<p style="margin: 0 0 8px; color: #718096; font-size: 13px;">PAYMENT DETAILS</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Amount:</strong> INR {transaction.amount:.2f}</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Booking Ref:</strong> {booking.booking_ref}</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Transaction:</strong> {transaction.transaction_ref}</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Method:</strong> {transaction.payment_method or "Card"}</p>'
+            f'</div>'
+            f'</div>'
+            f'<div style="background: #0f2033; padding: 24px 32px; text-align: center;">'
+            f'<p style="color: rgba(255,255,255,0.5); font-size: 12px; margin: 0;">Stayvora | support@stayvora.co.in | www.stayvora.co.in</p>'
+            f'</div>'
+            f'</div>'
         ),
     )
 
@@ -153,11 +195,26 @@ def queue_payment_failure_email(
         transaction_id=transaction.id,
         subject=f"Payment failed — {booking.booking_ref}",
         body=(
-            f"Hi {booking.user_name},\n\n"
-            f"Your payment for booking {booking.booking_ref} failed.\n"
-            f"Reason: {reason}\n\n"
-            "Your reservation hold is still active. Please retry to keep your booking.\n\n"
-            "— Stayvora Team"
+            f'<div style="font-family: Inter, -apple-system, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff;">'
+            f'<div style="background: #0f2033; padding: 32px; text-align: center;">'
+            f'<h1 style="color: #d6b86b; font-family: Playfair Display, Georgia, serif; font-size: 28px; margin: 0;">Stayvora</h1>'
+            f'<p style="color: rgba(255,255,255,0.6); font-size: 13px; margin: 8px 0 0;">Premium Hotel Bookings</p>'
+            f'</div>'
+            f'<div style="padding: 40px 32px;">'
+            f'<h2 style="color: #0f2033; font-size: 22px; margin: 0 0 16px;">Payment Failed</h2>'
+            f'<p style="color: #4a5568; line-height: 1.7;">Hi {booking.user_name},</p>'
+            f'<p style="color: #4a5568; line-height: 1.7;">Your payment for booking {booking.booking_ref} could not be processed.</p>'
+            f'<div style="background: #f7f5ef; border-radius: 12px; padding: 24px; margin: 24px 0; border-left: 4px solid #d6b86b;">'
+            f'<p style="margin: 0 0 8px; color: #718096; font-size: 13px;">FAILURE DETAILS</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Reason:</strong> {reason}</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Booking Ref:</strong> {booking.booking_ref}</p>'
+            f'</div>'
+            f'<p style="color: #4a5568; line-height: 1.7;">Your reservation hold remains active. Please retry payment to confirm your booking.</p>'
+            f'</div>'
+            f'<div style="background: #0f2033; padding: 24px 32px; text-align: center;">'
+            f'<p style="color: rgba(255,255,255,0.5); font-size: 12px; margin: 0;">Stayvora | support@stayvora.co.in | www.stayvora.co.in</p>'
+            f'</div>'
+            f'</div>'
         ),
     )
 
@@ -172,10 +229,25 @@ def queue_booking_cancellation_email(
         booking_id=booking.id,
         subject=f"Booking cancelled — {booking.booking_ref}",
         body=(
-            f"Hi {booking.user_name},\n\n"
-            f"Your booking {booking.booking_ref} has been cancelled.\n\n"
-            "If you did not request this, please contact support immediately.\n\n"
-            "— Stayvora Team"
+            f'<div style="font-family: Inter, -apple-system, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff;">'
+            f'<div style="background: #0f2033; padding: 32px; text-align: center;">'
+            f'<h1 style="color: #d6b86b; font-family: Playfair Display, Georgia, serif; font-size: 28px; margin: 0;">Stayvora</h1>'
+            f'<p style="color: rgba(255,255,255,0.6); font-size: 13px; margin: 8px 0 0;">Premium Hotel Bookings</p>'
+            f'</div>'
+            f'<div style="padding: 40px 32px;">'
+            f'<h2 style="color: #0f2033; font-size: 22px; margin: 0 0 16px;">Booking Cancelled</h2>'
+            f'<p style="color: #4a5568; line-height: 1.7;">Hi {booking.user_name},</p>'
+            f'<p style="color: #4a5568; line-height: 1.7;">Your booking has been cancelled.</p>'
+            f'<div style="background: #f7f5ef; border-radius: 12px; padding: 24px; margin: 24px 0; border-left: 4px solid #d6b86b;">'
+            f'<p style="margin: 0 0 8px; color: #718096; font-size: 13px;">BOOKING DETAILS</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Ref:</strong> {booking.booking_ref}</p>'
+            f'</div>'
+            f'<p style="color: #4a5568; line-height: 1.7;">If you did not request this cancellation, please contact support immediately at support@stayvora.co.in.</p>'
+            f'</div>'
+            f'<div style="background: #0f2033; padding: 24px 32px; text-align: center;">'
+            f'<p style="color: rgba(255,255,255,0.5); font-size: 12px; margin: 0;">Stayvora | support@stayvora.co.in | www.stayvora.co.in</p>'
+            f'</div>'
+            f'</div>'
         ),
     )
 
@@ -193,12 +265,27 @@ def queue_refund_initiated_email(db, booking: models.Booking) -> models.Notifica
         booking_id=booking.id,
         subject=f"Refund started — {booking.booking_ref}",
         body=(
-            f"Hi {booking.user_name},\n\n"
-            f"Your refund for booking {booking.booking_ref} has been initiated.\n\n"
-            f"Refund amount : INR {booking.refund_amount:.2f}\n"
-            f"Expected by   : {settlement}\n\n"
-            "You will receive another email once the refund completes.\n\n"
-            "— Stayvora Team"
+            f'<div style="font-family: Inter, -apple-system, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff;">'
+            f'<div style="background: #0f2033; padding: 32px; text-align: center;">'
+            f'<h1 style="color: #d6b86b; font-family: Playfair Display, Georgia, serif; font-size: 28px; margin: 0;">Stayvora</h1>'
+            f'<p style="color: rgba(255,255,255,0.6); font-size: 13px; margin: 8px 0 0;">Premium Hotel Bookings</p>'
+            f'</div>'
+            f'<div style="padding: 40px 32px;">'
+            f'<h2 style="color: #0f2033; font-size: 22px; margin: 0 0 16px;">Refund Initiated</h2>'
+            f'<p style="color: #4a5568; line-height: 1.7;">Hi {booking.user_name},</p>'
+            f'<p style="color: #4a5568; line-height: 1.7;">Your refund has been initiated.</p>'
+            f'<div style="background: #f7f5ef; border-radius: 12px; padding: 24px; margin: 24px 0; border-left: 4px solid #d6b86b;">'
+            f'<p style="margin: 0 0 8px; color: #718096; font-size: 13px;">REFUND DETAILS</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Amount:</strong> INR {booking.refund_amount:.2f}</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Booking Ref:</strong> {booking.booking_ref}</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Expected:</strong> {settlement}</p>'
+            f'</div>'
+            f'<p style="color: #4a5568; line-height: 1.7;">You will receive another email once the refund has been completed.</p>'
+            f'</div>'
+            f'<div style="background: #0f2033; padding: 24px 32px; text-align: center;">'
+            f'<p style="color: rgba(255,255,255,0.5); font-size: 12px; margin: 0;">Stayvora | support@stayvora.co.in | www.stayvora.co.in</p>'
+            f'</div>'
+            f'</div>'
         ),
     )
 
@@ -211,12 +298,27 @@ def queue_refund_success_email(db, booking: models.Booking) -> models.Notificati
         booking_id=booking.id,
         subject=f"Refund complete — {booking.booking_ref}",
         body=(
-            f"Hi {booking.user_name},\n\n"
-            f"Your refund of INR {booking.refund_amount:.2f} for booking "
-            f"{booking.booking_ref} has been processed.\n\n"
-            f"Gateway reference: {booking.refund_gateway_reference or 'N/A'}\n\n"
-            "Please allow 2-5 business days for the amount to appear in your account.\n\n"
-            "— Stayvora Team"
+            f'<div style="font-family: Inter, -apple-system, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff;">'
+            f'<div style="background: #0f2033; padding: 32px; text-align: center;">'
+            f'<h1 style="color: #d6b86b; font-family: Playfair Display, Georgia, serif; font-size: 28px; margin: 0;">Stayvora</h1>'
+            f'<p style="color: rgba(255,255,255,0.6); font-size: 13px; margin: 8px 0 0;">Premium Hotel Bookings</p>'
+            f'</div>'
+            f'<div style="padding: 40px 32px;">'
+            f'<h2 style="color: #0f2033; font-size: 22px; margin: 0 0 16px;">Refund Processed</h2>'
+            f'<p style="color: #4a5568; line-height: 1.7;">Hi {booking.user_name},</p>'
+            f'<p style="color: #4a5568; line-height: 1.7;">Your refund has been processed successfully.</p>'
+            f'<div style="background: #f7f5ef; border-radius: 12px; padding: 24px; margin: 24px 0; border-left: 4px solid #d6b86b;">'
+            f'<p style="margin: 0 0 8px; color: #718096; font-size: 13px;">REFUND DETAILS</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Amount:</strong> INR {booking.refund_amount:.2f}</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Booking Ref:</strong> {booking.booking_ref}</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Reference:</strong> {booking.refund_gateway_reference or "N/A"}</p>'
+            f'</div>'
+            f'<p style="color: #4a5568; line-height: 1.7;">The refund will appear in your account within 2-5 business days.</p>'
+            f'</div>'
+            f'<div style="background: #0f2033; padding: 24px 32px; text-align: center;">'
+            f'<p style="color: rgba(255,255,255,0.5); font-size: 12px; margin: 0;">Stayvora | support@stayvora.co.in | www.stayvora.co.in</p>'
+            f'</div>'
+            f'</div>'
         ),
     )
 
@@ -229,11 +331,26 @@ def queue_refund_failure_email(db, booking: models.Booking) -> models.Notificati
         booking_id=booking.id,
         subject=f"Refund issue — {booking.booking_ref}",
         body=(
-            f"Hi {booking.user_name},\n\n"
-            f"We encountered an issue processing your refund for booking {booking.booking_ref}.\n\n"
-            f"Reason: {booking.refund_failed_reason or 'Processing error'}\n\n"
-            "Our support team has been notified and will contact you within 24 hours.\n\n"
-            "— Stayvora Team"
+            f'<div style="font-family: Inter, -apple-system, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff;">'
+            f'<div style="background: #0f2033; padding: 32px; text-align: center;">'
+            f'<h1 style="color: #d6b86b; font-family: Playfair Display, Georgia, serif; font-size: 28px; margin: 0;">Stayvora</h1>'
+            f'<p style="color: rgba(255,255,255,0.6); font-size: 13px; margin: 8px 0 0;">Premium Hotel Bookings</p>'
+            f'</div>'
+            f'<div style="padding: 40px 32px;">'
+            f'<h2 style="color: #0f2033; font-size: 22px; margin: 0 0 16px;">Refund Issue</h2>'
+            f'<p style="color: #4a5568; line-height: 1.7;">Hi {booking.user_name},</p>'
+            f'<p style="color: #4a5568; line-height: 1.7;">We encountered an issue processing your refund.</p>'
+            f'<div style="background: #f7f5ef; border-radius: 12px; padding: 24px; margin: 24px 0; border-left: 4px solid #d6b86b;">'
+            f'<p style="margin: 0 0 8px; color: #718096; font-size: 13px;">ISSUE DETAILS</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Booking Ref:</strong> {booking.booking_ref}</p>'
+            f'<p style="margin: 4px 0; color: #2d3748;"><strong>Reason:</strong> {booking.refund_failed_reason or "Processing error"}</p>'
+            f'</div>'
+            f'<p style="color: #4a5568; line-height: 1.7;">Our support team has been notified and will contact you within 24 hours to resolve this issue.</p>'
+            f'</div>'
+            f'<div style="background: #0f2033; padding: 24px 32px; text-align: center;">'
+            f'<p style="color: rgba(255,255,255,0.5); font-size: 12px; margin: 0;">Stayvora | support@stayvora.co.in | www.stayvora.co.in</p>'
+            f'</div>'
+            f'</div>'
         ),
     )
 
@@ -302,6 +419,7 @@ def _send_via_resend(
         "from": from_addr,
         "to": [notification.recipient_email],
         "subject": notification.subject,
+        "html": notification.body,
         "text": notification.body,
     }
 
@@ -332,13 +450,20 @@ def deliver_notification(notification: models.NotificationOutbox) -> None:
         raise ValueError("Notification delivery rejected for test simulation")
 
     config = get_settings()
+    if config.app_env.lower() != "production":
+        logger.debug(
+            "Non-production runtime â€” skipping live delivery for %s (event=%s)",
+            notification.recipient_email,
+            notification.event_type,
+        )
+        return
     if not config.resend_api_key:
         logger.debug(
             "RESEND_API_KEY not configured — skipping delivery for %s (event=%s)",
             notification.recipient_email,
             notification.event_type,
         )
-        return  # treat as success in dev/test
+        return  # treat as success when production mail is not configured
 
     from_addr = f"{config.email_from_name} <{config.email_from_address}>"
     try:

@@ -5,6 +5,14 @@ import uuid
 import enum
 from datetime import date, datetime, timedelta, timezone
 
+def _broadcast(event_type: str, payload: dict, source: str = "partner"):
+    """Fire-and-forget WebSocket broadcast for real-time sync."""
+    try:
+        from main import broadcast_event
+        broadcast_event(event_type, payload, source)
+    except Exception:
+        pass
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, joinedload
@@ -258,19 +266,30 @@ def partner_register(
 ):
     enforce_rate_limit("partner:register", request, subject=payload.email.lower())
     existing_user = db.query(models.User).filter(models.User.email == payload.email.lower()).first()
-    if existing_user:
-        raise HTTPException(status_code=409, detail="Email already registered")
 
-    user = models.User(
-        email=payload.email.lower(),
-        full_name=payload.full_name,
-        hashed_password=hash_password(payload.password),
-        is_admin=False,
-        is_partner=True,
-        is_active=True,
-    )
-    db.add(user)
-    db.flush()
+    if existing_user and existing_user.is_partner:
+        # Already a registered partner — block duplicate
+        raise HTTPException(status_code=409, detail="Email already registered as a partner")
+
+    if existing_user:
+        # User exists from booking app but is NOT a partner yet — upgrade them
+        existing_user.is_partner = True
+        existing_user.full_name = payload.full_name
+        existing_user.hashed_password = hash_password(payload.password)
+        user = existing_user
+        db.flush()
+    else:
+        # Brand-new user
+        user = models.User(
+            email=payload.email.lower(),
+            full_name=payload.full_name,
+            hashed_password=hash_password(payload.password),
+            is_admin=False,
+            is_partner=True,
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
 
     hotel = models.PartnerHotel(
         owner_user_id=user.id,
@@ -284,12 +303,25 @@ def partner_register(
         state=payload.state,
         country=payload.country,
         postal_code=payload.postal_code,
+        latitude=payload.latitude,
+        longitude=payload.longitude,
+        formatted_address=payload.formatted_address,
+        location_verified=payload.location_verified,
         bank_account_name=payload.bank_account_name,
         bank_account_number_masked=_mask_account_number(payload.bank_account_number),
         bank_ifsc=payload.bank_ifsc,
         bank_upi_id=payload.bank_upi_id,
     )
     db.add(hotel)
+
+    # Propagate hotel coordinates to any rooms created during registration
+    db.flush()
+    if hotel.latitude and hotel.longitude:
+        for room in hotel.rooms:
+            if not room.latitude:
+                room.latitude = hotel.latitude
+                room.longitude = hotel.longitude
+
     db.commit()
     db.refresh(user)
     resp = build_token_response(user, db)
@@ -413,6 +445,10 @@ def create_partner_room(
         size_sqft=payload.size_sqft,
         floor=payload.floor,
     )
+    # Inherit hotel coordinates if room doesn't have its own
+    if not room.latitude and hotel.latitude:
+        room.latitude = hotel.latitude
+        room.longitude = hotel.longitude
     db.add(room)
     db.commit()
     db.refresh(room)
@@ -424,6 +460,15 @@ def create_partner_room(
         entity_id=str(room.id),
         metadata={"partner_hotel_id": hotel.id},
     )
+
+    # ── Real-time broadcast: room created ──
+    _broadcast("room-updated", {
+        "room_id": room.id,
+        "hotel_id": hotel.id,
+        "action": "created",
+        "price": room.price,
+    })
+
     return _serialize_partner_room(room)
 
 
@@ -468,6 +513,25 @@ def update_partner_room(
         entity_id=str(room.id),
         metadata={"fields": sorted(payload.model_dump(exclude_unset=True).keys())},
     )
+
+    # ── Real-time broadcast: room updated ──
+    updated_fields = list(payload.model_dump(exclude_unset=True).keys())
+    event_type = "price-updated" if "price" in updated_fields else "room-updated"
+    _broadcast(event_type, {
+        "room_id": room.id,
+        "hotel_id": hotel.id,
+        "action": "updated",
+        "fields": updated_fields,
+        "price": room.price,
+    })
+
+    if "availability" in updated_fields or "is_active" in updated_fields:
+        _broadcast("availability-updated", {
+            "room_id": room.id,
+            "availability": room.availability,
+            "is_active": room.is_active,
+        })
+
     return _serialize_partner_room(room)
 
 
@@ -550,6 +614,117 @@ def list_partner_bookings(
         .all()
     )
     return schemas.PartnerBookingListResponse(bookings=bookings, total=len(bookings))
+
+
+# ── Partner Booking Accept / Reject ───────────────────────────────────
+
+@router.post("/bookings/{booking_id}/accept")
+def accept_booking(
+    booking_id: int,
+    partner_user: models.User = Depends(get_current_partner),
+    db: Session = Depends(get_db),
+):
+    """Partner accepts a booking → status moves to confirmed."""
+    hotel = _get_partner_hotel_or_404(db, partner_user.id)
+    booking = (
+        db.query(models.Booking)
+        .join(models.Room, models.Room.id == models.Booking.room_id)
+        .options(joinedload(models.Booking.room))
+        .filter(models.Booking.id == booking_id, models.Room.partner_hotel_id == hotel.id)
+        .first()
+    )
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found for this hotel")
+    if booking.status not in (models.BookingStatus.PENDING, models.BookingStatus.PROCESSING):
+        raise HTTPException(status_code=400, detail=f"Cannot accept a booking with status '{booking.status}'")
+
+    booking.status = models.BookingStatus.CONFIRMED
+    db.commit()
+    db.refresh(booking)
+
+    write_audit_log(
+        db,
+        actor_user_id=partner_user.id,
+        action="booking_accepted",
+        entity_type="booking",
+        entity_id=booking.id,
+        metadata={
+            "booking_id": booking.id,
+            "booking_ref": booking.booking_ref,
+        },
+    )
+    _broadcast("booking-confirmed", {"booking_id": booking.id, "booking_ref": booking.booking_ref, "status": "confirmed"})
+
+    return {"id": booking.id, "status": booking.status, "message": "Booking accepted successfully"}
+
+
+@router.post("/bookings/{booking_id}/reject")
+def reject_booking(
+    booking_id: int,
+    partner_user: models.User = Depends(get_current_partner),
+    db: Session = Depends(get_db),
+):
+    """Partner rejects a booking → auto-cancel + initiate refund if paid."""
+    hotel = _get_partner_hotel_or_404(db, partner_user.id)
+    booking = (
+        db.query(models.Booking)
+        .join(models.Room, models.Room.id == models.Booking.room_id)
+        .options(joinedload(models.Booking.room))
+        .filter(models.Booking.id == booking_id, models.Room.partner_hotel_id == hotel.id)
+        .first()
+    )
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found for this hotel")
+    if booking.status in (models.BookingStatus.CANCELLED, models.BookingStatus.COMPLETED):
+        raise HTTPException(status_code=400, detail=f"Cannot reject a booking with status '{booking.status}'")
+
+    booking.status = models.BookingStatus.CANCELLED
+
+    # Auto-refund if already paid
+    refund_initiated = False
+    if booking.payment_status == models.PaymentStatus.PAID:
+        booking.refund_status = models.RefundStatus.REFUND_REQUESTED
+        booking.refund_amount = float(booking.total_amount)
+        booking.refund_requested_at = datetime.now(timezone.utc)
+        booking.payment_status = models.PaymentStatus.REFUNDED
+        refund_initiated = True
+
+    # Release inventory
+    try:
+        from services.inventory_service import release_inventory_for_booking
+        release_inventory_for_booking(db, booking=booking)
+    except Exception:
+        pass
+
+    db.commit()
+    db.refresh(booking)
+
+    write_audit_log(
+        db,
+        actor_user_id=partner_user.id,
+        action="booking_rejected",
+        entity_type="booking",
+        entity_id=booking.id,
+        metadata={
+            "booking_id": booking.id,
+            "booking_ref": booking.booking_ref,
+            "refund_initiated": refund_initiated,
+        },
+    )
+    _broadcast("booking-cancelled", {
+        "booking_id": booking.id,
+        "booking_ref": booking.booking_ref,
+        "status": "cancelled",
+        "reason": "partner_rejected",
+        "refund_initiated": refund_initiated,
+    })
+
+    return {
+        "id": booking.id,
+        "status": booking.status,
+        "refund_initiated": refund_initiated,
+        "message": "Booking rejected" + (" — refund has been initiated" if refund_initiated else ""),
+    }
 
 
 @router.get("/revenue", response_model=schemas.PartnerRevenueSummary)

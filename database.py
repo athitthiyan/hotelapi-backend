@@ -93,7 +93,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("SEED_ADMIN_PASSWORD", "seed_admin_password"),
     )
     seed_admin_name: str = Field(
-        default="InsightBoard Admin",
+        default="Stayvora Admin",
         validation_alias=AliasChoices("SEED_ADMIN_NAME", "seed_admin_name"),
     )
     seed_partner_email: str = Field(

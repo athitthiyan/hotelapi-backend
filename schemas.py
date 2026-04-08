@@ -180,6 +180,9 @@ class BookingCreate(BaseModel):
     check_in: datetime
     check_out: datetime
     guests: int = Field(default=1, ge=1)
+    adults: int = Field(default=1, ge=1, le=10)
+    children: int = Field(default=0, ge=0, le=6)
+    infants: int = Field(default=0, ge=0, le=4)
     special_requests: Optional[str] = Field(default=None, max_length=500)
 
     @field_validator("phone")
@@ -205,6 +208,9 @@ class BookingResponse(BaseModel):
     check_out: datetime
     hold_expires_at: Optional[datetime] = None
     guests: int
+    adults: int = 1
+    children: int = 0
+    infants: int = 0
     nights: int
     room_rate: float
     taxes: float
@@ -496,6 +502,10 @@ class PartnerRegisterRequest(BaseModel):
     state: Optional[str] = Field(default=None, max_length=100)
     country: str = Field(default="India", min_length=2, max_length=100)
     postal_code: Optional[str] = Field(default=None, max_length=20)
+    latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+    formatted_address: Optional[str] = Field(default=None, max_length=500)
+    location_verified: bool = Field(default=False)
     gst_number: Optional[str] = Field(default=None, max_length=30)
     bank_account_name: Optional[str] = Field(default=None, max_length=150)
     bank_account_number: Optional[str] = Field(default=None, min_length=6, max_length=24)

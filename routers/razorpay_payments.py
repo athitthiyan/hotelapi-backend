@@ -20,17 +20,15 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session, joinedload
 
 import models
-import schemas
 from database import get_db, settings
 from routers.auth import get_current_admin
 from services.audit_service import write_audit_log
 from services.inventory_service import (
     confirm_inventory_for_booking,
-    release_inventory_for_booking,
 )
 from services.notification_service import (
     queue_booking_confirmation_email,
@@ -587,13 +585,13 @@ async def razorpay_webhook(
 
     if event_type == "payment.captured":
         return _handle_payment_captured(db, payload)
-    elif event_type == "payment.failed":
+    if event_type == "payment.failed":
         return _handle_payment_failed(db, payload)
-    elif event_type == "refund.processed":
+    if event_type == "refund.processed":
         return _handle_refund_processed(db, payload)
-    else:
-        logger.debug("Unhandled Razorpay webhook event: %s", event_type)
-        return {"status": "ignored", "event": event_type}
+
+    logger.debug("Unhandled Razorpay webhook event: %s", event_type)
+    return {"status": "ignored", "event": event_type}
 
 
 def _handle_payment_captured(db: Session, payload: dict) -> dict:

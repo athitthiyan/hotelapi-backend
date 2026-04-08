@@ -26,6 +26,11 @@ class MyBookingsResponse(BaseModel):
     upcoming: int
     past: int
     cancelled: int
+    expired: int
+    page: int = 1
+    per_page: int = 5
+    total_pages: int = 1
+    tab: str = "upcoming"
     bookings: list = []
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -328,6 +333,9 @@ def read_me(user: models.User = Depends(get_current_user)):
 @router.get("/me/bookings")
 def my_bookings(
     user: models.User = Depends(get_current_user),
+    tab: str = "upcoming",
+    page: int = 1,
+    per_page: int = 5,
     db: Session = Depends(get_db),
 ):
     from datetime import timezone as _tz
@@ -335,7 +343,38 @@ def my_bookings(
     def _aware(dt: datetime) -> datetime:
         return dt.replace(tzinfo=_tz.utc) if dt.tzinfo is None else dt
 
+    def _is_upcoming(booking: models.Booking) -> bool:
+        return booking.status in (
+            models.BookingStatus.CONFIRMED,
+            models.BookingStatus.PROCESSING,
+            models.BookingStatus.PENDING,
+        ) and _aware(booking.check_in) >= now
+
+    def _is_past(booking: models.Booking) -> bool:
+        return booking.status == models.BookingStatus.COMPLETED or (
+            booking.status
+            not in (models.BookingStatus.CANCELLED, models.BookingStatus.EXPIRED)
+            and _aware(booking.check_in) < now
+        )
+
+    def _is_cancelled(booking: models.Booking) -> bool:
+        return booking.status == models.BookingStatus.CANCELLED
+
+    def _is_expired(booking: models.Booking) -> bool:
+        return booking.status == models.BookingStatus.EXPIRED
+
     now = datetime.now(_tz.utc)
+    normalized_tab = tab.lower().strip()
+    if normalized_tab not in {"upcoming", "past", "cancelled", "expired"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported bookings tab",
+        )
+    if page < 1:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Page must be >= 1")
+    if per_page < 1 or per_page > 50:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="per_page must be between 1 and 50")
+
     bookings = (
         db.query(models.Booking)
         .options(joinedload(models.Booking.room))
@@ -349,32 +388,37 @@ def my_bookings(
         .all()
     )
     attach_bookings_lifecycle_state(db, bookings)
-    upcoming = sum(
-        1 for b in bookings
-        if b.status in (
-            models.BookingStatus.CONFIRMED,
-            models.BookingStatus.PROCESSING,
-            models.BookingStatus.PENDING,
-        ) and _aware(b.check_in) >= now
-    )
-    cancelled = sum(
-        1 for b in bookings
-        if b.status in (models.BookingStatus.CANCELLED, models.BookingStatus.EXPIRED)
-    )
-    past = sum(
-        1 for b in bookings
-        if b.status == models.BookingStatus.COMPLETED
-        or (
-            b.status not in (models.BookingStatus.CANCELLED, models.BookingStatus.EXPIRED)
-            and _aware(b.check_in) < now
-        )
-    )
+    upcoming = sum(1 for b in bookings if _is_upcoming(b))
+    past = sum(1 for b in bookings if _is_past(b))
+    cancelled = sum(1 for b in bookings if _is_cancelled(b))
+    expired = sum(1 for b in bookings if _is_expired(b))
+
+    if normalized_tab == "upcoming":
+        filtered_bookings = [b for b in bookings if _is_upcoming(b)]
+    elif normalized_tab == "past":
+        filtered_bookings = [b for b in bookings if _is_past(b)]
+    elif normalized_tab == "cancelled":
+        filtered_bookings = [b for b in bookings if _is_cancelled(b)]
+    else:
+        filtered_bookings = [b for b in bookings if _is_expired(b)]
+
+    total = len(filtered_bookings)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    start = (page - 1) * per_page
+    paginated_bookings = filtered_bookings[start : start + per_page]
+
     return MyBookingsResponse(
-        total=len(bookings),
+        total=total,
         upcoming=upcoming,
         past=past,
         cancelled=cancelled,
-        bookings=[schemas.BookingResponse.model_validate(b) for b in bookings],
+        expired=expired,
+        page=page,
+        per_page=per_page,
+        total_pages=total_pages,
+        tab=normalized_tab,
+        bookings=[schemas.BookingResponse.model_validate(b) for b in paginated_bookings],
     )
 
 

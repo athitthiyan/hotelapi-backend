@@ -273,6 +273,11 @@ class TestMyBookings:
         assert body["upcoming"] == 0
         assert body["past"] == 0
         assert body["cancelled"] == 0
+        assert body["expired"] == 0
+        assert body["page"] == 1
+        assert body["per_page"] == 5
+        assert body["total_pages"] == 1
+        assert body["tab"] == "upcoming"
 
     def test_my_bookings_requires_auth(self, client):
         r = client.get("/auth/me/bookings")
@@ -322,4 +327,163 @@ class TestMyBookings:
         r = client.get("/auth/me/bookings", headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 200
         body = r.json()
-        assert isinstance(body, (list, dict))
+        assert body["total"] == 1
+        assert body["upcoming"] == 1
+        assert body["past"] == 0
+        assert body["cancelled"] == 0
+        assert body["expired"] == 0
+        assert body["page"] == 1
+        assert body["per_page"] == 5
+        assert body["total_pages"] == 1
+        assert body["tab"] == "upcoming"
+        assert len(body["bookings"]) == 1
+        assert body["bookings"][0]["booking_ref"] == "MYBK001"
+
+    def test_my_bookings_supports_tab_pagination_and_expired_counts(self, client, app):
+        email = "bucketed_user@test.com"
+        token = _signup_login(client, email)
+
+        db = app.state.testing_session_local()
+        user = db.query(models.User).filter(models.User.email == email).first()
+        room = models.Room(
+            hotel_name="Segment Hotel",
+            room_type="standard",
+            price=100.0,
+            max_guests=2,
+            beds=1,
+            bathrooms=1,
+            city="NYC",
+            country="USA",
+        )
+        db.add(room)
+        db.commit()
+        db.refresh(room)
+
+        future = datetime.now(timezone.utc) + timedelta(days=10)
+        past = datetime.now(timezone.utc) - timedelta(days=10)
+        db.add_all([
+            models.Booking(
+                booking_ref="UPCOMING-01",
+                user_name="Test User",
+                email=email,
+                user_id=user.id,
+                room_id=room.id,
+                check_in=future,
+                check_out=future + timedelta(days=1),
+                guests=1,
+                nights=1,
+                room_rate=100.0,
+                taxes=12.0,
+                service_fee=5.0,
+                total_amount=117.0,
+                status=models.BookingStatus.CONFIRMED,
+                payment_status=models.PaymentStatus.PAID,
+            ),
+            models.Booking(
+                booking_ref="PAST-01",
+                user_name="Test User",
+                email=email,
+                user_id=user.id,
+                room_id=room.id,
+                check_in=past,
+                check_out=past + timedelta(days=1),
+                guests=1,
+                nights=1,
+                room_rate=100.0,
+                taxes=12.0,
+                service_fee=5.0,
+                total_amount=117.0,
+                status=models.BookingStatus.COMPLETED,
+                payment_status=models.PaymentStatus.PAID,
+            ),
+            models.Booking(
+                booking_ref="CANCELLED-01",
+                user_name="Test User",
+                email=email,
+                user_id=user.id,
+                room_id=room.id,
+                check_in=future + timedelta(days=3),
+                check_out=future + timedelta(days=4),
+                guests=1,
+                nights=1,
+                room_rate=100.0,
+                taxes=12.0,
+                service_fee=5.0,
+                total_amount=117.0,
+                status=models.BookingStatus.CANCELLED,
+                payment_status=models.PaymentStatus.FAILED,
+            ),
+            models.Booking(
+                booking_ref="EXPIRED-01",
+                user_name="Test User",
+                email=email,
+                user_id=user.id,
+                room_id=room.id,
+                check_in=future + timedelta(days=5),
+                check_out=future + timedelta(days=6),
+                guests=1,
+                nights=1,
+                room_rate=100.0,
+                taxes=12.0,
+                service_fee=5.0,
+                total_amount=117.0,
+                status=models.BookingStatus.EXPIRED,
+                payment_status=models.PaymentStatus.EXPIRED,
+            ),
+        ])
+        db.commit()
+        db.close()
+
+        expired = client.get(
+            "/auth/me/bookings",
+            params={"tab": "expired", "page": 1, "per_page": 1},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        cancelled = client.get(
+            "/auth/me/bookings",
+            params={"tab": "cancelled"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert expired.status_code == 200
+        expired_body = expired.json()
+        assert expired_body["total"] == 1
+        assert expired_body["upcoming"] == 1
+        assert expired_body["past"] == 1
+        assert expired_body["cancelled"] == 1
+        assert expired_body["expired"] == 1
+        assert expired_body["page"] == 1
+        assert expired_body["per_page"] == 1
+        assert expired_body["total_pages"] == 1
+        assert expired_body["tab"] == "expired"
+        assert expired_body["bookings"][0]["booking_ref"] == "EXPIRED-01"
+
+        assert cancelled.status_code == 200
+        cancelled_body = cancelled.json()
+        assert cancelled_body["total"] == 1
+        assert cancelled_body["cancelled"] == 1
+        assert cancelled_body["expired"] == 1
+        assert cancelled_body["bookings"][0]["booking_ref"] == "CANCELLED-01"
+
+    def test_my_bookings_rejects_invalid_pagination_inputs(self, client):
+        token = _signup_login(client, "bookings-pagination@test.com")
+
+        invalid_tab = client.get(
+            "/auth/me/bookings",
+            params={"tab": "mystery"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        invalid_page = client.get(
+            "/auth/me/bookings",
+            params={"page": 0},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        invalid_page_size = client.get(
+            "/auth/me/bookings",
+            params={"per_page": 99},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert invalid_tab.status_code == 400
+        assert invalid_page.status_code == 422
+        assert invalid_page_size.status_code == 422

@@ -701,10 +701,14 @@ class TestAuthCoverageEdges:
         db_session.commit()
 
         response = auth.my_bookings(user=user, db=db_session)
-        assert response.total == 3
+        assert response.total == 1
         assert response.upcoming == 1
         assert response.past == 1
         assert response.cancelled == 1
+        assert response.expired == 0
+        assert response.tab == "upcoming"
+        assert len(response.bookings) == 1
+        assert response.bookings[0].booking_ref == "BK-UPCOMING"
 
 
 class TestReviewCoverageEdges:

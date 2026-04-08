@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import logging
 from io import BytesIO
-from typing import Iterable, Optional
+from typing import Optional
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 
 import models
@@ -24,12 +23,12 @@ LEFT_MARGIN = 40
 RIGHT_MARGIN = PAGE_WIDTH - 40
 CONTENT_WIDTH = RIGHT_MARGIN - LEFT_MARGIN
 
-# Brand colours
-BRAND_PRIMARY = colors.HexColor("#1a1a2e")
-BRAND_ACCENT = colors.HexColor("#e94560")
-BRAND_LIGHT = colors.HexColor("#f5f5f5")
-BRAND_TEXT = colors.HexColor("#333333")
-BRAND_MUTED = colors.HexColor("#888888")
+# Brand colours — Stayvora Premium
+BRAND_PRIMARY = colors.HexColor("#0f2033")    # Midnight Navy
+BRAND_ACCENT = colors.HexColor("#d6b86b")     # Champagne Gold
+BRAND_LIGHT = colors.HexColor("#faf8f2")      # Warm Ivory
+BRAND_TEXT = colors.HexColor("#2d3748")        # Rich Dark Text
+BRAND_MUTED = colors.HexColor("#718096")      # Soft Slate
 
 
 def invoice_number_for_booking(booking: models.Booking) -> str:
@@ -64,7 +63,7 @@ def _draw_divider(c: canvas.Canvas, y: float) -> float:
 
 def _draw_section_title(c: canvas.Canvas, title: str, y: float) -> float:
     """Draw a bold section heading."""
-    c.setFillColor(BRAND_PRIMARY)
+    c.setFillColor(BRAND_ACCENT)
     c.setFont("Helvetica-Bold", 11)
     c.drawString(LEFT_MARGIN, y, title)
     return y - 18
@@ -104,7 +103,7 @@ def _draw_table_row(
 
     font = "Helvetica-Bold" if bold else "Helvetica"
     c.setFont(font, 9)
-    c.setFillColor(BRAND_PRIMARY if bold else BRAND_TEXT)
+    c.setFillColor(BRAND_ACCENT if bold else BRAND_TEXT)
 
     for i, (col, x) in enumerate(zip(cols, col_xs)):
         if align_right and i in align_right:
