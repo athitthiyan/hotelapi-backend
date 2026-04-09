@@ -198,12 +198,11 @@ def health_check():
 
     # Notification queue depth
     try:
-        db = SessionLocal()
-        pending_count = db.query(models.NotificationOutbox).filter(
-            models.NotificationOutbox.status == models.NotificationStatus.PENDING
-        ).count()
+        with SessionLocal() as db:
+            pending_count = db.query(models.NotificationOutbox).filter(
+                models.NotificationOutbox.status == models.NotificationStatus.PENDING
+            ).count()
         checks["notification_queue"] = {"pending": pending_count}
-        db.close()
     except Exception:
         checks["notification_queue"] = {"status": "unavailable"}
 
