@@ -230,3 +230,12 @@ def force_confirm_booking(
     db.commit()
     db.refresh(booking)
     return booking
+
+
+# ─── Key Rotation ────────────────────────────────────────────────────────────
+
+@router.get("/ops/key-rotation-status")
+def key_rotation_status(admin: models.User = Depends(get_current_admin)):
+    """Check rotation status of all API keys/secrets."""
+    from services.key_rotation_service import get_rotation_report
+    return get_rotation_report()

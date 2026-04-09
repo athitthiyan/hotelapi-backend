@@ -38,6 +38,16 @@ def booking_overlaps_date_window(
     return booking_start <= to_date and booking_end > from_date
 
 
+def parse_search_date(raw: str, field_name: str) -> date:
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} must be in YYYY-MM-DD format",
+        ) from exc
+
+
 @router.get("", response_model=schemas.RoomListResponse)
 def get_rooms(
     query: Optional[str] = Query(None),
@@ -112,16 +122,27 @@ def get_rooms(
         for amenity in [item.strip() for item in amenities.split(",") if item.strip()]:
             room_query = room_query.filter(models.Room.amenities.ilike(f"%{amenity}%"))
 
-    if check_in and check_out:
-        check_in_dt = datetime.fromisoformat(check_in)
-        check_out_dt = datetime.fromisoformat(check_out)
+    check_in_date = None
+    check_out_date = None
+    if check_in:
+        check_in_date = parse_search_date(check_in, "check_in")
+    if check_out:
+        check_out_date = parse_search_date(check_out, "check_out")
+    if (check_in_date and not check_out_date) or (check_out_date and not check_in_date):
+        raise HTTPException(status_code=400, detail="check_in and check_out are required together")
+    if check_in_date and check_out_date and check_out_date <= check_in_date:
+        raise HTTPException(status_code=400, detail="check_out must be after check_in")
+
+    if check_in_date and check_out_date:
         release_expired_inventory_locks(db)
+
+        # 1. Exclude rooms with blocked / sold-out inventory rows
         room_query = room_query.filter(
             ~db.query(models.RoomInventory.id)
             .filter(
                 models.RoomInventory.room_id == models.Room.id,
-                models.RoomInventory.inventory_date >= check_in_dt.date(),
-                models.RoomInventory.inventory_date < check_out_dt.date(),
+                models.RoomInventory.inventory_date >= check_in_date,
+                models.RoomInventory.inventory_date < check_out_date,
                 or_(
                     models.RoomInventory.status == models.InventoryStatus.BLOCKED,
                     models.RoomInventory.available_units <= 0,
@@ -130,9 +151,35 @@ def get_rooms(
             .exists()
         )
 
+        # 2. Exclude rooms where overlapping CONFIRMED + actively-held PENDING
+        #    bookings have consumed all available units.
+        #    (confirmed bookings may not have inventory rows if inventory was
+        #    never initialised for those dates)
+        checkout_dt = datetime.combine(check_out_date, datetime.min.time())
+        checkin_dt = datetime.combine(check_in_date, datetime.min.time())
+        now_utc = datetime.now(timezone.utc)
+
+        overlap_count = (
+            db.query(func.count(models.Booking.id))
+            .filter(
+                models.Booking.room_id == models.Room.id,
+                models.Booking.check_in < checkout_dt,
+                models.Booking.check_out > checkin_dt,
+                or_(
+                    models.Booking.status == models.BookingStatus.CONFIRMED,
+                    (
+                        (models.Booking.status == models.BookingStatus.PENDING)
+                        & (models.Booking.hold_expires_at > now_utc)
+                    ),
+                ),
+            )
+            .correlate(models.Room)
+            .scalar_subquery()
+        )
+        room_query = room_query.filter(overlap_count < models.Room.total_room_count)
+
     rooms = room_query.all()
-    if check_in:
-        check_in_date = datetime.fromisoformat(check_in).date()
+    if check_in_date:
         inventory_rows = []
         if rooms:
             inventory_rows = (

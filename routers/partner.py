@@ -5,7 +5,7 @@ import uuid
 import enum
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, joinedload
 
@@ -13,6 +13,7 @@ import models
 import schemas
 from database import get_db
 from routers.auth import (
+    _set_refresh_cookie,
     build_token_response,
     get_current_partner,
     hash_password,
@@ -263,6 +264,7 @@ def _normalize_legacy_payout_statuses(payouts: list[models.PartnerPayout]) -> bo
 def partner_register(
     payload: schemas.PartnerRegisterRequest,
     request: Request,
+    response: Response,
     db: Session = Depends(get_db),
 ):
     enforce_rate_limit("partner:register", request, subject=payload.email.lower())
@@ -326,6 +328,7 @@ def partner_register(
     db.commit()
     db.refresh(user)
     resp = build_token_response(user, db)
+    _set_refresh_cookie(response, resp.refresh_token)
     db.commit()
     return resp
 
@@ -334,6 +337,7 @@ def partner_register(
 def partner_login(
     payload: schemas.PartnerLoginRequest,
     request: Request,
+    response: Response,
     db: Session = Depends(get_db),
 ):
     enforce_rate_limit("partner:login", request, subject=payload.email.lower())
@@ -345,6 +349,7 @@ def partner_login(
     if not user.is_partner:
         raise HTTPException(status_code=403, detail="Partner access required")
     resp = build_token_response(user, db)
+    _set_refresh_cookie(response, resp.refresh_token)
     db.commit()
     return resp
 

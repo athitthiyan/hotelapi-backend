@@ -27,6 +27,7 @@ from services.inventory_service import (
     release_expired_inventory_locks,
     release_inventory_for_booking,
 )
+from services.search_service import clear_search_cache
 from services.notification_service import (
     queue_booking_cancellation_email,
     queue_booking_hold_email,
@@ -253,6 +254,7 @@ def release_expired_holds(
 
     if expired_bookings:
         db.commit()
+        clear_search_cache()
     return len(expired_bookings)
 
 
@@ -469,6 +471,7 @@ def create_booking(
     queue_booking_hold_email(db, db_booking)
     db.commit()
     db.refresh(db_booking)
+    clear_search_cache()
 
     # ── Real-time broadcast: booking created ──
     _broadcast("booking-created", {
@@ -739,6 +742,7 @@ def extend_booking_hold(
     booking.payment_status = models.PaymentStatus.PENDING
     db.commit()
     db.refresh(booking)
+    clear_search_cache()
     return get_booking_or_404(db, booking_id)
 
 
@@ -822,6 +826,7 @@ def _cancel_booking(booking_id: int, db: Session) -> models.Booking:
     queue_booking_cancellation_email(db, booking)
     db.commit()
     db.refresh(booking)
+    clear_search_cache()
 
     # ── Real-time broadcast: booking cancelled ──
     _broadcast("booking-cancelled", {

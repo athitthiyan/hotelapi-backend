@@ -175,6 +175,15 @@ class Settings(BaseSettings):
         default=True,
         validation_alias=AliasChoices("STRIPE_ENABLED", "stripe_enabled"),
     )
+    # ── HttpOnly Cookie Auth ─────────────────────────────────────────────────
+    cookie_domain: str = Field(
+        default="",
+        validation_alias=AliasChoices("COOKIE_DOMAIN", "cookie_domain"),
+    )
+    cookie_secure: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("COOKIE_SECURE", "cookie_secure"),
+    )
 
     @field_validator("database_url")
     @classmethod
@@ -207,12 +216,18 @@ def get_settings() -> Settings:
 def validate_runtime_configuration(config: Settings) -> None:
     """Raise RuntimeError for insecure production configurations."""
     if config.app_env.lower() != "production":
+        # Warn in development if using default key
+        if config.secret_key == "change-this-in-production":
+            logger.warning(
+                "Using default SECRET_KEY in development. "
+                "In production, set a strong, random key with at least 64 characters."
+            )
         return
     insecure_default = config.secret_key == "change-this-in-production"
-    too_short = len(config.secret_key) < 32
+    too_short = len(config.secret_key) < 64
     if insecure_default or too_short:
         raise RuntimeError(
-            "Production SECRET_KEY must be set and at least 32 characters long"
+            "Production SECRET_KEY must be set and at least 64 characters long"
         )
 
 

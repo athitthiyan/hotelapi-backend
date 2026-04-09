@@ -4,7 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Set
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import inspect, text
@@ -26,6 +26,19 @@ def run_expired_hold_release(session_factory=SessionLocal) -> int:
     db = session_factory()
     try:
         return bookings.release_expired_holds(db)
+    finally:
+        db.close()
+
+
+def run_notification_processor(session_factory=SessionLocal) -> dict:
+    """Process pending email notifications from the outbox queue."""
+    from services.notification_service import process_pending_notifications
+    db = session_factory()
+    try:
+        result = process_pending_notifications(db)
+        if result["total"] > 0:
+            logger.info("Notification processor: sent=%d failed=%d", result["sent"], result["failed"])
+        return result
     finally:
         db.close()
 
@@ -63,6 +76,7 @@ def startup_checks(state) -> None:
 
     scheduler = BackgroundScheduler(timezone="UTC")
     scheduler.add_job(run_expired_hold_release, "interval", minutes=2, id="release-expired-holds", replace_existing=True)
+    scheduler.add_job(run_notification_processor, "interval", minutes=2, id="process-notifications", replace_existing=True)
     scheduler.start()
     state.hold_expiry_scheduler = scheduler
 
@@ -86,8 +100,8 @@ app = FastAPI(
     title="HotelAPI - Stayvora Backend",
     description="Unified backend for Stayvora booking, Stayvora Pay payments, Stayvora Admin operations, and partner workflows",
     version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url="/docs" if settings.app_env.lower() != "production" else None,
+    redoc_url="/redoc" if settings.app_env.lower() != "production" else None,
     lifespan=lifespan,
 )
 
@@ -108,6 +122,12 @@ _HARDCODED_ORIGINS = [
     "http://localhost:4201",
     "http://localhost:4202",
     "http://localhost:4203",
+    "http://127.0.0.1:4200",
+    "http://127.0.0.1:4201",
+    "http://127.0.0.1:4202",
+    "http://127.0.0.1:4203",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
 ]
 _env_origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
 origins = list(set(_env_origins + _HARDCODED_ORIGINS))
@@ -116,11 +136,26 @@ logger.info("Configured CORS origins: %s", ", ".join(sorted(origins)))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_origin_regex=r"https://.*\.vercel\.app",  # covers all Vercel preview URLs too
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
 )
+
+# Security headers middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response: Response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 app.include_router(rooms.router)
@@ -147,17 +182,91 @@ def root():
 
 @app.api_route("/health", methods=["GET", "HEAD"], tags=["Health"])
 def health_check():
+    import time
+    checks = {}
+
+    # Database connectivity
+    db_start = time.monotonic()
     try:
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))
-        database_status = "connected"
-    except SQLAlchemyError:
-        database_status = "unavailable"
+        checks["database"] = {"status": "connected", "latency_ms": round((time.monotonic() - db_start) * 1000, 1)}
+    except SQLAlchemyError as e:
+        checks["database"] = {"status": "unavailable", "error": str(e)[:200]}
+
+    # Scheduler status
+    scheduler = getattr(app.state, "hold_expiry_scheduler", None)
+    checks["scheduler"] = {"status": "running" if scheduler and scheduler.running else "stopped"}
+
+    # Notification queue depth
+    try:
+        db = SessionLocal()
+        pending_count = db.query(models.NotificationOutbox).filter(
+            models.NotificationOutbox.status == models.NotificationStatus.PENDING
+        ).count()
+        checks["notification_queue"] = {"pending": pending_count}
+        db.close()
+    except Exception:
+        checks["notification_queue"] = {"status": "unavailable"}
+
+    overall = "healthy" if checks["database"].get("status") == "connected" else "degraded"
 
     return {
-        "status": "healthy",
+        "status": overall,
         "service": "hotel-api",
-        "database": database_status,
+        "version": "1.0.0",
+        "environment": settings.app_env,
+        "checks": checks,
+    }
+
+
+@app.get("/health/deep", tags=["Health"])
+def deep_health_check():
+    """Deep health check — validates all external dependencies."""
+    import time
+    results = {}
+
+    # Database read + write test
+    db_start = time.monotonic()
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+            # Check table count as a schema sanity check
+            row = conn.execute(text(
+                "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'"
+            )).scalar()
+            results["database"] = {
+                "status": "healthy",
+                "latency_ms": round((time.monotonic() - db_start) * 1000, 1),
+                "public_tables": row,
+            }
+    except Exception as e:
+        results["database"] = {"status": "unhealthy", "error": str(e)[:200]}
+
+    # Resend API key configured
+    results["email"] = {
+        "provider": "resend",
+        "configured": bool(settings.resend_api_key),
+    }
+
+    # Payment gateways configured
+    results["payments"] = {
+        "stripe": {"configured": bool(settings.stripe_secret_key), "enabled": settings.stripe_enabled},
+        "razorpay": {"configured": bool(settings.razorpay_key_id)},
+    }
+
+    # Scheduler
+    scheduler = getattr(app.state, "hold_expiry_scheduler", None)
+    jobs = []
+    if scheduler and scheduler.running:
+        for job in scheduler.get_jobs():
+            jobs.append({"id": job.id, "next_run": str(job.next_run_time)})
+    results["scheduler"] = {"running": bool(scheduler and scheduler.running), "jobs": jobs}
+
+    all_healthy = results["database"].get("status") == "healthy"
+    return {
+        "status": "healthy" if all_healthy else "degraded",
+        "checks": results,
     }
 
 
@@ -305,6 +414,12 @@ async def websocket_events(websocket: WebSocket):
 @app.post("/seed", tags=["Dev"])
 def seed_database(db=None):
     """Seed the database with launch-ready starter rooms and operator accounts."""
+    # Disable /seed endpoint in production to prevent accidental data resets
+    if settings.app_env.lower() == "production":
+        raise HTTPException(
+            status_code=403,
+            detail="Seed endpoint is disabled in production"
+        )
     db = SessionLocal()
     try:
         rooms_created = 0
@@ -710,6 +825,12 @@ CITY_COORDINATES = {
 @app.post("/seed/backfill-coordinates", tags=["Dev"])
 def backfill_room_coordinates():
     """Patch latitude/longitude on existing rooms that are missing coordinates."""
+    # Disable this dev endpoint in production
+    if settings.app_env.lower() == "production":
+        raise HTTPException(
+            status_code=403,
+            detail="This endpoint is disabled in production"
+        )
     import random
     db = SessionLocal()
     try:

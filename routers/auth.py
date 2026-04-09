@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
 import httpx as _httpx
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -120,6 +120,40 @@ def build_token_response(user: models.User, db: Session | None = None) -> schema
     )
 
 
+REFRESH_COOKIE_NAME = "sv_refresh_token"
+
+
+def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
+    """Set the refresh token as an HttpOnly cookie on the response."""
+    is_prod = settings.app_env.lower() == "production"
+    # Production: API (Railway) and frontend (stayvora.co.in) are on different
+    # domains, so we need SameSite=None + Secure=True to allow cross-site cookies.
+    # Local dev: frontend and API both on localhost → SameSite=Lax is fine.
+    response.set_cookie(
+        key=REFRESH_COOKIE_NAME,
+        value=refresh_token,
+        httponly=True,
+        secure=True if is_prod else False,
+        samesite="none" if is_prod else "lax",
+        domain=settings.cookie_domain or None,  # e.g. ".stayvora.co.in" for cross-subdomain
+        path="/auth",  # only sent to /auth/* endpoints (refresh, logout)
+        max_age=settings.refresh_token_exp_days * 86400,
+    )
+
+
+def _clear_refresh_cookie(response: Response) -> None:
+    """Clear the refresh token cookie."""
+    is_prod = settings.app_env.lower() == "production"
+    response.delete_cookie(
+        key=REFRESH_COOKIE_NAME,
+        httponly=True,
+        secure=True if is_prod else False,
+        samesite="none" if is_prod else "lax",
+        domain=settings.cookie_domain or None,
+        path="/auth",
+    )
+
+
 def hash_phone_otp(phone: str, otp: str) -> str:
     raw = f"{normalize_phone(phone)}:{otp}:{settings.secret_key}"
     return hashlib.sha256(raw.encode()).hexdigest()
@@ -222,7 +256,7 @@ def _request_meta(request: Request) -> dict:
 
 
 @router.post("/signup", response_model=schemas.TokenResponse, status_code=201)
-def signup(payload: schemas.UserSignup, request: Request, db: Session = Depends(get_db)):
+def signup(payload: schemas.UserSignup, request: Request, response: Response, db: Session = Depends(get_db)):
     normalized_email = normalize_email(payload.email)
     enforce_rate_limit("auth:signup", request, subject=normalized_email)
     existing_user = db.query(models.User).filter(models.User.email == normalized_email).first()
@@ -241,13 +275,14 @@ def signup(payload: schemas.UserSignup, request: Request, db: Session = Depends(
     db.commit()
     db.refresh(user)
     resp = build_token_response(user, db)
+    _set_refresh_cookie(response, resp.refresh_token)
     write_audit_log(db, user.id, "auth.signup", "user", user.id, _request_meta(request))
     db.commit()
     return resp
 
 
 @router.post("/login", response_model=schemas.TokenResponse)
-def login(payload: schemas.UserLogin, request: Request, db: Session = Depends(get_db)):
+def login(payload: schemas.UserLogin, request: Request, response: Response, db: Session = Depends(get_db)):
     normalized_email = normalize_email(payload.email)
     enforce_rate_limit("auth:login", request, subject=normalized_email)
     user = db.query(models.User).filter(models.User.email == normalized_email).first()
@@ -260,18 +295,29 @@ def login(payload: schemas.UserLogin, request: Request, db: Session = Depends(ge
         db.commit()
         raise HTTPException(status_code=403, detail="User account is inactive")
     resp = build_token_response(user, db)
+    _set_refresh_cookie(response, resp.refresh_token)
     write_audit_log(db, user.id, "auth.login.success", "user", user.id, _request_meta(request))
     db.commit()
     return resp
 
 
 @router.post("/refresh", response_model=schemas.TokenResponse)
-def refresh_token(payload: schemas.RefreshTokenRequest, db: Session = Depends(get_db)):
-    token_payload = decode_token(payload.refresh_token, "refresh")
+def refresh_token(
+    response: Response,
+    payload: schemas.RefreshTokenRequest | None = None,
+    sv_refresh_token: str | None = Cookie(default=None),
+    db: Session = Depends(get_db),
+):
+    # Read refresh token from HttpOnly cookie first, fall back to request body
+    raw_refresh = sv_refresh_token or (payload.refresh_token if payload else None)
+    if not raw_refresh:
+        raise HTTPException(status_code=401, detail="Refresh token is required")
+
+    token_payload = decode_token(raw_refresh, "refresh")
     user = get_user_from_payload(db, token_payload)
 
     # Validate refresh token exists and is not revoked
-    incoming_hash = _hash_token(payload.refresh_token)
+    incoming_hash = _hash_token(raw_refresh)
     stored = db.query(models.RefreshToken).filter(
         models.RefreshToken.token_hash == incoming_hash
     ).first()
@@ -283,6 +329,7 @@ def refresh_token(payload: schemas.RefreshTokenRequest, db: Session = Depends(ge
         ).update({"revoked": True})
         write_audit_log(db, user.id, "auth.refresh.reuse_detected", "user", user.id, {"family_id": stored.family_id})
         db.commit()
+        _clear_refresh_cookie(response)
         raise HTTPException(status_code=401, detail="Token reuse detected. All sessions revoked.")
 
     # Issue new tokens, inheriting the family_id
@@ -303,6 +350,7 @@ def refresh_token(payload: schemas.RefreshTokenRequest, db: Session = Depends(ge
         expires_at=utc_now() + timedelta(days=settings.refresh_token_exp_days),
     ))
     db.commit()
+    _set_refresh_cookie(response, new_refresh_token)
     return schemas.TokenResponse(
         access_token=access_token,
         refresh_token=new_refresh_token,
@@ -311,17 +359,25 @@ def refresh_token(payload: schemas.RefreshTokenRequest, db: Session = Depends(ge
 
 
 @router.post("/logout", response_model=schemas.MessageResponse)
-def logout(payload: schemas.LogoutRequest, db: Session = Depends(get_db)):
-    incoming_hash = _hash_token(payload.refresh_token)
-    stored = db.query(models.RefreshToken).filter(
-        models.RefreshToken.token_hash == incoming_hash
-    ).first()
-    if stored:
-        # Revoke entire token family for this session
-        db.query(models.RefreshToken).filter(
-            models.RefreshToken.family_id == stored.family_id
-        ).update({"revoked": True})
-        db.commit()
+def logout(
+    response: Response,
+    payload: schemas.LogoutRequest | None = None,
+    sv_refresh_token: str | None = Cookie(default=None),
+    db: Session = Depends(get_db),
+):
+    raw_refresh = sv_refresh_token or (payload.refresh_token if payload else None)
+    if raw_refresh:
+        incoming_hash = _hash_token(raw_refresh)
+        stored = db.query(models.RefreshToken).filter(
+            models.RefreshToken.token_hash == incoming_hash
+        ).first()
+        if stored:
+            # Revoke entire token family for this session
+            db.query(models.RefreshToken).filter(
+                models.RefreshToken.family_id == stored.family_id
+            ).update({"revoked": True})
+            db.commit()
+    _clear_refresh_cookie(response)
     return schemas.MessageResponse(message="Logged out successfully")
 
 
@@ -432,6 +488,7 @@ def request_phone_otp(
     db: Session = Depends(get_db),
 ):
     phone = normalize_phone(payload.phone)
+    # Rate limiting enforced per user per phone number to prevent OTP brute-force attacks
     enforce_rate_limit("auth:phone-otp", request, subject=f"{user.id}:{phone}")
     otp = f"{secrets.randbelow(1_000_000):06d}"
     user.pending_phone = phone
@@ -458,6 +515,11 @@ def verify_phone_otp(
     user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # Validate OTP format: must be numeric and 4-6 digits
+    # This prevents type confusion attacks and validates input early
+    if not payload.otp or not payload.otp.isdigit() or not (4 <= len(payload.otp) <= 6):
+        raise HTTPException(status_code=400, detail="OTP must be 4-6 numeric digits")
+
     phone = normalize_phone(payload.phone)
     now = utc_now()
     if (
@@ -686,6 +748,7 @@ async def _verify_jwks_token(id_token: str, jwks_url: str, audience: str | None)
 async def social_login(
     payload: schemas.SocialLoginRequest,
     request: Request,
+    response: Response,
     db: Session = Depends(get_db),
 ):
     enforce_rate_limit("auth:social-login", request)
@@ -758,6 +821,7 @@ async def social_login(
     db.commit()
     db.refresh(user)
     resp = build_token_response(user, db)
+    _set_refresh_cookie(response, resp.refresh_token)
     write_audit_log(db, user.id, "auth.social_login.success", "user", user.id, {**_request_meta(request), "provider": payload.provider})
     db.commit()
     return resp
