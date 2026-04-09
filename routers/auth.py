@@ -133,7 +133,7 @@ def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
         key=REFRESH_COOKIE_NAME,
         value=refresh_token,
         httponly=True,
-        secure=True if is_prod else False,
+        secure=is_prod,
         samesite="none" if is_prod else "lax",
         domain=settings.cookie_domain or None,  # e.g. ".stayvora.co.in" for cross-subdomain
         path="/auth",  # only sent to /auth/* endpoints (refresh, logout)
@@ -147,7 +147,7 @@ def _clear_refresh_cookie(response: Response) -> None:
     response.delete_cookie(
         key=REFRESH_COOKIE_NAME,
         httponly=True,
-        secure=True if is_prod else False,
+        secure=is_prod,
         samesite="none" if is_prod else "lax",
         domain=settings.cookie_domain or None,
         path="/auth",
@@ -517,7 +517,7 @@ def verify_phone_otp(
 ):
     # Validate OTP format: must be numeric and 4-6 digits
     # This prevents type confusion attacks and validates input early
-    if not payload.otp or not payload.otp.isdigit() or not (4 <= len(payload.otp) <= 6):
+    if not payload.otp or not payload.otp.isdigit() or 4 > len(payload.otp) or len(payload.otp) > 6:
         raise HTTPException(status_code=400, detail="OTP must be 4-6 numeric digits")
 
     phone = normalize_phone(payload.phone)
