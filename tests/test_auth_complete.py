@@ -68,6 +68,7 @@ class TestAuthHelpers:
         client.post("/auth/signup", json=signup_payload())
         login = client.post("/auth/login", json={"email": "athit@example.com", "password": "StrongPass123"})
         access_token = login.json()["access_token"]
+        client.cookies.clear()
 
         # Trying to use access token as refresh token should fail
         with pytest.raises(Exception) as exc_info:
@@ -266,6 +267,7 @@ class TestRefresh:
         access_token = login.json()["access_token"]
 
         # Passing access token as refresh token → wrong token_type
+        client.cookies.clear()
         r = client.post("/auth/refresh", json={"refresh_token": access_token})
         assert r.status_code == 401
         assert "refresh" in r.json()["detail"]

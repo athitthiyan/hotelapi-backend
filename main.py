@@ -7,6 +7,8 @@ from typing import Set
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 from jose import jwt, JWTError
@@ -140,10 +142,6 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
 )
-
-# Security headers middleware
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):

@@ -159,8 +159,8 @@ def test_get_rooms_filters_by_date_inventory_and_admin_inventory_endpoints(clien
         "/rooms",
         params={
             "city": "Paris",
-            "check_in": "2026-04-20T00:00:00+00:00",
-            "check_out": "2026-04-22T00:00:00+00:00",
+            "check_in": "2026-04-20",
+            "check_out": "2026-04-22",
         },
     )
     inventory_view = client.get(

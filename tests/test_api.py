@@ -4,10 +4,8 @@ Tests cover authentication, bookings, security, and payments.
 """
 import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
 
 import models
-import pytest
 from routers.auth import hash_password
 
 
@@ -210,11 +208,11 @@ class TestAuthenticationTokenRefresh:
             json={"refresh_token": old_refresh_token}
         )
         assert first_refresh.status_code == 200
-        new_refresh_token = first_refresh.json()["refresh_token"]
+        first_refresh.json()["refresh_token"]
 
         # Manually mark the old token as revoked to simulate token theft detection
         old_refresh_records = db_session.query(models.RefreshToken).filter(
-            models.RefreshToken.revoked == True
+            models.RefreshToken.revoked.is_(True)
         ).all()
         if old_refresh_records:
             old_family_id = old_refresh_records[0].family_id
@@ -337,45 +335,61 @@ class TestBookingsCreate:
 class TestBookingsOperations:
     """Test booking state operations (extend hold, cancel, etc)."""
 
-    def test_extend_hold_on_valid_booking(self, client, room_id):
+    def test_extend_hold_on_valid_booking(self, client, room_id, db_session):
         """Test extending hold on active booking."""
         # Create booking
         booking = client.post("/bookings", json=booking_payload(room_id))
         assert booking.status_code == 201
-        booking_ref = booking.json()["booking_ref"]
+        booking_data = booking.json()
+        booking_record = db_session.query(models.Booking).filter(
+            models.Booking.id == booking_data["id"]
+        ).first()
+        booking_record.hold_expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        booking_record.status = models.BookingStatus.EXPIRED
+        booking_record.payment_status = models.PaymentStatus.EXPIRED
+        db_session.commit()
+        from services.inventory_service import release_inventory_for_booking
+        release_inventory_for_booking(db_session, booking=booking_record)
+        db_session.commit()
 
         # Extend hold
-        response = client.post(f"/bookings/{booking_ref}/extend-hold")
+        response = client.post(
+            f"/bookings/{booking_data['id']}/extend-hold",
+            json={"email": booking_data["email"]},
+        )
         assert response.status_code == 200
-        assert response.json()["booking_ref"] == booking_ref
+        assert response.json()["booking_ref"] == booking_data["booking_ref"]
 
     def test_extend_hold_on_expired_booking_returns_409(self, client, room_id, db_session):
         """Test that extending hold on expired booking fails."""
         # Create booking
         booking = client.post("/bookings", json=booking_payload(room_id))
         booking_data = booking.json()
-        booking_ref = booking_data["booking_ref"]
+        booking_id = booking_data["id"]
 
         # Manually mark booking as expired
         booking_record = db_session.query(models.Booking).filter(
-            models.Booking.booking_ref == booking_ref
+            models.Booking.id == booking_id
         ).first()
         if booking_record:
             booking_record.status = models.BookingStatus.EXPIRED
             db_session.commit()
 
         # Attempt to extend hold on expired booking
-        response = client.post(f"/bookings/{booking_ref}/extend-hold")
+        response = client.post(
+            f"/bookings/{booking_id}/extend-hold",
+            json={"email": booking_data["email"]},
+        )
         assert response.status_code == 409
 
     def test_cancel_booking(self, client, room_id):
         """Test booking cancellation."""
         # Create booking
         booking = client.post("/bookings", json=booking_payload(room_id))
-        booking_ref = booking.json()["booking_ref"]
+        booking_id = booking.json()["id"]
 
         # Cancel booking
-        response = client.post(f"/bookings/{booking_ref}/cancel")
+        response = client.post(f"/bookings/{booking_id}/cancel")
         assert response.status_code == 200
         assert response.json()["status"] == "cancelled"
 
@@ -383,16 +397,16 @@ class TestBookingsOperations:
         """Test retrieving booking by reference."""
         # Create booking
         booking = client.post("/bookings", json=booking_payload(room_id))
-        booking_ref = booking.json()["booking_ref"]
+        booking_data = booking.json()
 
         # Get booking
-        response = client.get(f"/bookings/{booking_ref}")
+        response = client.get(f"/bookings/{booking_data['id']}")
         assert response.status_code == 200
-        assert response.json()["booking_ref"] == booking_ref
+        assert response.json()["booking_ref"] == booking_data["booking_ref"]
 
     def test_get_nonexistent_booking_returns_404(self, client):
         """Test that nonexistent booking returns 404."""
-        response = client.get("/bookings/INVALID123")
+        response = client.get("/bookings/999999")
         assert response.status_code == 404
 
 
@@ -405,10 +419,7 @@ class TestBookingsUnavailableDates:
         client.post("/bookings", json=booking_payload(room_id))
 
         # Get unavailable dates
-        response = client.get(
-            f"/bookings/unavailable-dates",
-            params={"room_id": room_id}
-        )
+        response = client.get(f"/rooms/{room_id}/unavailable-dates")
         assert response.status_code == 200
         data = response.json()
         assert isinstance(data.get("unavailable_dates"), list)
@@ -428,10 +439,7 @@ class TestBookingsUnavailableDates:
         client.post("/bookings", json=booking)
 
         # Get unavailable dates
-        response = client.get(
-            f"/bookings/unavailable-dates",
-            params={"room_id": room_id}
-        )
+        response = client.get(f"/rooms/{room_id}/unavailable-dates")
         assert response.status_code == 200
 
 
@@ -475,7 +483,7 @@ class TestSecurityCORSHeaders:
 
     def test_cors_allows_common_methods(self, client):
         """Test that CORS allows common HTTP methods."""
-        response = client.options("/")
+        client.options("/")
         # OPTIONS may not be explicitly supported, but other methods should work
         assert client.get("/").status_code == 200
 
@@ -603,12 +611,11 @@ class TestPaymentsIntent:
         """Test creating payment intent for booking."""
         # Create booking
         booking = client.post("/bookings", json=booking_payload(room_id))
-        booking_ref = booking.json()["booking_ref"]
 
         # Create payment intent
         response = client.post(
-            "/payments/intent",
-            json={"booking_ref": booking_ref}
+            "/payments/create-payment-intent",
+            json={"booking_id": booking.json()["id"], "payment_method": "mock"}
         )
         assert response.status_code in [200, 201, 402]  # Intent created or requires action
         if response.status_code in [200, 201]:
@@ -617,8 +624,8 @@ class TestPaymentsIntent:
     def test_payment_intent_with_invalid_booking_returns_404(self, client):
         """Test payment intent with invalid booking returns 404."""
         response = client.post(
-            "/payments/intent",
-            json={"booking_ref": "INVALID"}
+            "/payments/create-payment-intent",
+            json={"booking_id": 999999}
         )
         assert response.status_code == 404
 
@@ -629,21 +636,27 @@ class TestPaymentsIdempotency:
     def test_payment_with_idempotency_key(self, client, room_id):
         """Test that idempotency key prevents duplicate charges."""
         booking = client.post("/bookings", json=booking_payload(room_id))
-        booking_ref = booking.json()["booking_ref"]
+        booking_id = booking.json()["id"]
         idempotency_key = str(uuid.uuid4())
 
         # First payment request with idempotency key
         first = client.post(
-            "/payments/intent",
-            json={"booking_ref": booking_ref},
-            headers={"Idempotency-Key": idempotency_key}
+            "/payments/create-payment-intent",
+            json={
+                "booking_id": booking_id,
+                "payment_method": "mock",
+                "idempotency_key": idempotency_key,
+            }
         )
 
         # Second payment request with same idempotency key should return same result
         second = client.post(
-            "/payments/intent",
-            json={"booking_ref": booking_ref},
-            headers={"Idempotency-Key": idempotency_key}
+            "/payments/create-payment-intent",
+            json={
+                "booking_id": booking_id,
+                "payment_method": "mock",
+                "idempotency_key": idempotency_key,
+            }
         )
 
         # Both should succeed or fail consistently
@@ -696,7 +709,7 @@ class TestHealthEndpoints:
         assert response.status_code == 200
         data = response.json()
         assert data.get("status") == "healthy"
-        assert "database" in data
+        assert "database" in data["checks"]
 
     def test_health_check_with_head_method(self, client):
         """Test health check with HEAD method."""
@@ -725,12 +738,12 @@ class TestAuthenticationBookingFlow:
         # Create booking
         booking = client.post("/bookings", json=booking_payload(room_id))
         assert booking.status_code == 201
-        booking_ref = booking.json()["booking_ref"]
+        booking_data = booking.json()
 
         # View booking
-        view = client.get(f"/bookings/{booking_ref}")
+        view = client.get(f"/bookings/{booking_data['id']}")
         assert view.status_code == 200
-        assert view.json()["booking_ref"] == booking_ref
+        assert view.json()["booking_ref"] == booking_data["booking_ref"]
 
     def test_logout_revokes_tokens(self, client):
         """Test that logout revokes all tokens in family."""

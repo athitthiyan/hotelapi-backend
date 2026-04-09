@@ -458,8 +458,8 @@ class TestPartnerOperations:
         search = client.get(
             "/rooms",
             params={
-                "check_in": f"{target_date.isoformat()}T00:00:00+00:00",
-                "check_out": f"{(target_date + timedelta(days=1)).isoformat()}T00:00:00+00:00",
+                "check_in": target_date.isoformat(),
+                "check_out": (target_date + timedelta(days=1)).isoformat(),
             },
         )
         assert search.status_code == 200

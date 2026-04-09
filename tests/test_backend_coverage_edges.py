@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
@@ -302,7 +302,7 @@ class TestMainCoverageEdges:
             main.startup_checks(state)
 
         scheduler_factory.assert_called_once_with(timezone="UTC")
-        scheduler.add_job.assert_called_once()
+        assert scheduler.add_job.call_count == 2
         scheduler.start.assert_called_once()
         assert state.hold_expiry_scheduler is scheduler
 
@@ -378,6 +378,7 @@ class TestAuthCoverageEdges:
             await auth.social_login(
                 schemas.SocialLoginRequest(provider="github", id_token="token"),
                 request=_fake_request,
+                response=Response(),
                 db=db_session,
             )
 
@@ -395,6 +396,7 @@ class TestAuthCoverageEdges:
                 await auth.social_login(
                     schemas.SocialLoginRequest(provider="google", id_token="token"),
                     request=_fake_request,
+                    response=Response(),
                     db=db_session,
                 )
 
@@ -408,6 +410,7 @@ class TestAuthCoverageEdges:
                 await auth.social_login(
                     schemas.SocialLoginRequest(provider="google", id_token="token"),
                     request=_fake_request,
+                    response=Response(),
                     db=db_session,
                 )
 
@@ -421,6 +424,7 @@ class TestAuthCoverageEdges:
                 await auth.social_login(
                     schemas.SocialLoginRequest(provider="google", id_token="token"),
                     request=_fake_request,
+                    response=Response(),
                     db=db_session,
                 )
 
@@ -442,6 +446,7 @@ class TestAuthCoverageEdges:
                     await auth.social_login(
                         schemas.SocialLoginRequest(provider="google", id_token="token"),
                         request=_fake_request,
+                        response=Response(),
                         db=db_session,
                     )
         finally:
@@ -465,6 +470,7 @@ class TestAuthCoverageEdges:
                     await auth.social_login(
                         schemas.SocialLoginRequest(provider="google", id_token="token"),
                         request=_fake_request,
+                        response=Response(),
                         db=db_session,
                     )
         finally:
@@ -498,6 +504,7 @@ class TestAuthCoverageEdges:
             response = await auth.social_login(
                 schemas.SocialLoginRequest(provider="google", id_token="token"),
                 request=_fake_request,
+                response=Response(),
                 db=db_session,
             )
 
@@ -529,6 +536,7 @@ class TestAuthCoverageEdges:
                 await auth.social_login(
                     schemas.SocialLoginRequest(provider="google", id_token="token"),
                     request=_fake_request,
+                    response=Response(),
                     db=db_session,
                 )
 
@@ -554,6 +562,7 @@ class TestAuthCoverageEdges:
             response = await auth.social_login(
                 schemas.SocialLoginRequest(provider="google", id_token="token"),
                 request=_fake_request,
+                response=Response(),
                 db=db_session,
             )
 
@@ -596,6 +605,7 @@ class TestAuthCoverageEdges:
             response = await auth.social_login(
                 schemas.SocialLoginRequest(provider="google", id_token="token"),
                 request=_fake_request,
+                response=Response(),
                 db=db_session,
             )
 
@@ -631,6 +641,7 @@ class TestAuthCoverageEdges:
             response = await auth.social_login(
                 schemas.SocialLoginRequest(provider="google", id_token="token"),
                 request=_fake_request,
+                response=Response(),
                 db=db_session,
             )
 

@@ -159,8 +159,8 @@ def test_hold_expiry_scheduler_releases_inventory_and_restores_searchability(cli
         "/rooms",
         params={
             "city": "Chennai",
-            "check_in": check_in.isoformat(),
-            "check_out": check_out.isoformat(),
+            "check_in": check_in.date().isoformat(),
+            "check_out": check_out.date().isoformat(),
         },
     )
 

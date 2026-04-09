@@ -9,16 +9,21 @@ Tests cover:
 5. API Documentation - Verify docs are disabled in production
 """
 
-import os
-import pytest
+import importlib
 from unittest.mock import patch
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import models
 from database import Base, get_db, settings
+
+
+def load_main_for_env(app_env: str):
+    import main as main_module
+
+    with patch("database.settings.app_env", app_env):
+        return importlib.reload(main_module)
 
 
 class TestSecurityHeaders:
@@ -94,28 +99,21 @@ class TestCORSConfiguration:
         assert "http://localhost:4200" in origins
 
     def test_only_allowed_http_methods(self, client):
-        """Verify only specific HTTP methods are permitted."""
-        # The CORS middleware is configured with specific methods
-        # Test that we can use allowed methods
+        """Verify CORS preflight accepts configured HTTP methods."""
         allowed_methods = ["GET", "POST", "PUT", "DELETE", "PATCH"]
 
         for method in allowed_methods:
-            # Just verify the method isn't explicitly rejected by the framework
-            # (it may 404 if the endpoint doesn't exist, but not due to method restriction)
-            if method == "GET":
-                response = client.get("/health")
-            elif method == "POST":
-                response = client.post("/health")
-            elif method == "PUT":
-                response = client.put("/health")
-            elif method == "DELETE":
-                response = client.delete("/health")
-            elif method == "PATCH":
-                response = client.patch("/health")
+            response = client.options(
+                "/health",
+                headers={
+                    "Origin": "http://localhost:4200",
+                    "Access-Control-Request-Method": method,
+                },
+            )
 
-            # Should not get 405 Method Not Allowed due to CORS restrictions
-            # (may be 404 for endpoint not found, but not 405 from CORS)
-            assert response.status_code != 405
+            assert response.status_code == 200
+            allow_methods = response.headers.get("access-control-allow-methods", "")
+            assert method in allow_methods
 
     def test_stayvora_production_origins_included(self, client):
         """Verify production Stayvora origins are hardcoded."""
@@ -134,7 +132,7 @@ class TestSeedEndpointProtection:
     def test_seed_endpoint_blocked_in_production(self, tmp_path, app):
         """Verify POST /seed returns 403 in production environment."""
         # Patch settings to simulate production
-        with patch("database.settings.app_env", "production"):
+        with patch("main.settings.app_env", "production"):
             db_path = tmp_path / "test_prod.db"
             engine = create_engine(
                 f"sqlite:///{db_path}",
@@ -155,29 +153,46 @@ class TestSeedEndpointProtection:
 
             client = TestClient(app)
 
-            # Import after patching to ensure settings are loaded with patch
-            from routers import auth
-            from main import app as main_app
-
             response = client.post("/seed")
 
             assert response.status_code == 403
             assert "disabled in production" in response.json()["detail"].lower()
 
-    def test_seed_endpoint_accessible_in_development(self, client):
+    def test_seed_endpoint_accessible_in_development(self, tmp_path):
         """Verify POST /seed is accessible when not in production."""
-        # Ensure we're not in production
-        if settings.app_env.lower() == "production":
-            pytest.skip("Test only valid in non-production environment")
+        development_main = load_main_for_env("development")
+        try:
+            db_path = tmp_path / "test_dev_seed.db"
+            engine = create_engine(
+                f"sqlite:///{db_path}",
+                connect_args={"check_same_thread": False},
+            )
+            TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+            Base.metadata.create_all(bind=engine)
+            original_session_local = development_main.SessionLocal
 
-        response = client.post("/seed")
+            def override_get_db():
+                db = TestingSessionLocal()
+                try:
+                    yield db
+                finally:
+                    db.close()
 
-        # Should either succeed (201) or fail with auth/db errors, not 403
-        assert response.status_code != 403
+            development_main.app.dependency_overrides[get_db] = override_get_db
+            development_main.SessionLocal = TestingSessionLocal
+            client = TestClient(development_main.app)
+            response = client.post("/seed")
+
+            # Should either succeed or fail with data errors, not 403
+            assert response.status_code != 403
+        finally:
+            if "original_session_local" in locals():
+                development_main.SessionLocal = original_session_local
+            load_main_for_env(settings.app_env)
 
     def test_backfill_coordinates_blocked_in_production(self, tmp_path, app):
         """Verify POST /seed/backfill-coordinates returns 403 in production."""
-        with patch("database.settings.app_env", "production"):
+        with patch("main.settings.app_env", "production"):
             db_path = tmp_path / "test_prod_backfill.db"
             engine = create_engine(
                 f"sqlite:///{db_path}",
@@ -202,15 +217,37 @@ class TestSeedEndpointProtection:
             assert response.status_code == 403
             assert "disabled in production" in response.json()["detail"].lower()
 
-    def test_backfill_coordinates_accessible_in_development(self, client):
+    def test_backfill_coordinates_accessible_in_development(self, tmp_path):
         """Verify POST /seed/backfill-coordinates is accessible in development."""
-        if settings.app_env.lower() == "production":
-            pytest.skip("Test only valid in non-production environment")
+        development_main = load_main_for_env("development")
+        try:
+            db_path = tmp_path / "test_dev_backfill.db"
+            engine = create_engine(
+                f"sqlite:///{db_path}",
+                connect_args={"check_same_thread": False},
+            )
+            TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+            Base.metadata.create_all(bind=engine)
+            original_session_local = development_main.SessionLocal
 
-        response = client.post("/seed/backfill-coordinates")
+            def override_get_db():
+                db = TestingSessionLocal()
+                try:
+                    yield db
+                finally:
+                    db.close()
 
-        # Should either succeed (200) or fail with data errors, not 403
-        assert response.status_code != 403
+            development_main.app.dependency_overrides[get_db] = override_get_db
+            development_main.SessionLocal = TestingSessionLocal
+            client = TestClient(development_main.app)
+            response = client.post("/seed/backfill-coordinates")
+
+            # Should either succeed or fail with data errors, not 403
+            assert response.status_code != 403
+        finally:
+            if "original_session_local" in locals():
+                development_main.SessionLocal = original_session_local
+            load_main_for_env(settings.app_env)
 
 
 class TestOTPValidation:
@@ -340,8 +377,7 @@ class TestOTPValidation:
     def test_phone_otp_valid_lengths_accepted(self, client, db_session):
         """Verify OTPs of 4-6 digits are accepted for validation (even if incorrect)."""
         from routers import auth as auth_module
-        import secrets
-        from datetime import datetime, timezone, timedelta
+        from datetime import timedelta
 
         user = models.User(
             email="otp-valid@example.com",
@@ -392,31 +428,27 @@ class TestAPIDocumentationSecurity:
 
     def test_docs_endpoint_not_accessible_in_production(self):
         """Verify /docs endpoint returns 404 in production."""
-        if settings.app_env.lower() != "production":
-            pytest.skip("Test only applicable in production environment")
+        production_main = load_main_for_env("production")
+        try:
+            client = TestClient(production_main.app)
+            response = client.get("/docs")
 
-        from fastapi.testclient import TestClient
-        from main import app
-
-        client = TestClient(app)
-        response = client.get("/docs")
-
-        # In production with docs_url=None, endpoint should not exist
-        assert response.status_code == 404
+            # In production with docs_url=None, endpoint should not exist
+            assert response.status_code == 404
+        finally:
+            load_main_for_env(settings.app_env)
 
     def test_redoc_endpoint_not_accessible_in_production(self):
         """Verify /redoc endpoint returns 404 in production."""
-        if settings.app_env.lower() != "production":
-            pytest.skip("Test only applicable in production environment")
+        production_main = load_main_for_env("production")
+        try:
+            client = TestClient(production_main.app)
+            response = client.get("/redoc")
 
-        from fastapi.testclient import TestClient
-        from main import app
-
-        client = TestClient(app)
-        response = client.get("/redoc")
-
-        # In production with redoc_url=None, endpoint should not exist
-        assert response.status_code == 404
+            # In production with redoc_url=None, endpoint should not exist
+            assert response.status_code == 404
+        finally:
+            load_main_for_env(settings.app_env)
 
 
 class TestSecurityHeadersOnDifferentMethods:

@@ -66,7 +66,7 @@ class TestValidateRuntimeConfiguration:
 
     def test_production_secure_key_no_error(self):
         """Production with a long, non-default key → no error raised."""
-        secure_key = "a" * 40  # 40 chars, not the default
+        secure_key = "a" * 64  # 64 chars, not the default
         config = self._settings_with("production", secure_key)
         validate_runtime_configuration(config)  # should not raise
 

@@ -22,14 +22,14 @@ def test_health_check_connected():
     with patch.object(main.engine, "connect", return_value=manager):
         body = main.health_check()
 
-    assert body["database"] == "connected"
+    assert body["checks"]["database"]["status"] == "connected"
 
 
 def test_health_check_unavailable():
     with patch.object(main.engine, "connect", side_effect=SQLAlchemyError("boom")):
         body = main.health_check()
 
-    assert body["database"] == "unavailable"
+    assert body["checks"]["database"]["status"] == "unavailable"
 
 
 def test_startup_checks_success():

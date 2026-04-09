@@ -919,7 +919,7 @@ class PhoneOtpRequest(BaseModel):
 
 
 class PhoneOtpVerifyRequest(PhoneOtpRequest):
-    otp: str = Field(min_length=6, max_length=6, pattern=r"^[0-9]{6}$")
+    otp: str
 
 
 class PhoneOtpResponse(BaseModel):

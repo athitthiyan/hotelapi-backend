@@ -4,7 +4,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -14,8 +13,9 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test_bootstrap.db")
 
 import models  # noqa: E402
+import main  # noqa: E402
+import database as database_module  # noqa: E402
 from database import Base, get_db  # noqa: E402
-from routers import analytics, auth, bookings, notifications, ops, partner, payments, razorpay_payments, reviews, rooms, wishlist  # noqa: E402
 from services.rate_limit_service import reset_rate_limits  # noqa: E402
 
 
@@ -28,19 +28,13 @@ def app(tmp_path):
     )
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
-
-    app = FastAPI()
-    app.include_router(auth.router)
-    app.include_router(bookings.router)
-    app.include_router(payments.router)
-    app.include_router(rooms.router)
-    app.include_router(analytics.router)
-    app.include_router(notifications.router)
-    app.include_router(ops.router)
-    app.include_router(partner.router)
-    app.include_router(razorpay_payments.router)
-    app.include_router(reviews.router)
-    app.include_router(wishlist.router)
+    app = main.app
+    original_main_engine = main.engine
+    original_main_session_local = main.SessionLocal
+    original_database_engine = database_module.engine
+    original_database_session_local = database_module.SessionLocal
+    original_background_scheduler = main.BackgroundScheduler
+    original_scheduler = getattr(app.state, "hold_expiry_scheduler", None)
 
     def override_get_db():
         db = TestingSessionLocal()
@@ -52,10 +46,22 @@ def app(tmp_path):
     app.dependency_overrides[get_db] = override_get_db
     app.state.testing_session_local = TestingSessionLocal
     app.state.testing_engine = engine
+    app.state.hold_expiry_scheduler = None
+    main.engine = engine
+    main.SessionLocal = TestingSessionLocal
+    main.BackgroundScheduler = None
+    database_module.engine = engine
+    database_module.SessionLocal = TestingSessionLocal
 
     yield app
 
     app.dependency_overrides.clear()
+    app.state.hold_expiry_scheduler = original_scheduler
+    main.engine = original_main_engine
+    main.SessionLocal = original_main_session_local
+    main.BackgroundScheduler = original_background_scheduler
+    database_module.engine = original_database_engine
+    database_module.SessionLocal = original_database_session_local
     Base.metadata.drop_all(bind=engine)
     engine.dispose()
 
