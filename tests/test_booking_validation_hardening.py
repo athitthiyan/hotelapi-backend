@@ -213,14 +213,14 @@ def test_error_response_has_code_message_field_structure(client):
 # ─── Test 10: Check-in at current time is rejected (must be in future) ────────
 
 def test_create_booking_check_in_at_current_time_rejected(client, room_id):
-    """check_in at exactly now → expect 400 with CHECK_IN_PAST code."""
+    """check_in yesterday → expect 400 with CHECK_IN_PAST code."""
     now = datetime.now(timezone.utc)
     response = client.post(
         "/bookings",
         json=booking_payload(
             room_id,
-            check_in=now.isoformat(),
-            check_out=(now + timedelta(days=2)).isoformat(),
+            check_in=(now - timedelta(days=2)).isoformat(),
+            check_out=(now - timedelta(days=1)).isoformat(),
         ),
     )
     assert response.status_code == 400

@@ -21,6 +21,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from routers.auth import hash_password
+from services.rate_limit_service import reset_rate_limits
 import models
 
 
@@ -92,6 +93,47 @@ def create_room_via_api(client, headers, **overrides) -> dict:
     r = client.post("/rooms", headers=headers, json=room_payload(**overrides))
     assert r.status_code == 201, r.text
     return r.json()
+
+
+def otp_signup(client, email: str, full_name: str, password: str, phone: str):
+    """Helper to signup a user via OTP flow."""
+    reset_rate_limits()
+
+    # Request OTP for email
+    r_email = client.post("/auth/otp/request", json={"flow": "signup", "channel": "email", "recipient": email})
+    assert r_email.status_code == 200, r_email.text
+    email_data = r_email.json()
+
+    # Verify email OTP
+    r_email_verify = client.post("/auth/otp/verify", json={
+        "challenge_id": email_data["challenge_id"],
+        "otp": email_data["dev_code"],
+    })
+    assert r_email_verify.status_code == 200, r_email_verify.text
+
+    # Request OTP for phone
+    r_phone = client.post("/auth/otp/request", json={"flow": "signup", "channel": "phone", "recipient": phone})
+    assert r_phone.status_code == 200, r_phone.text
+    phone_data = r_phone.json()
+
+    # Verify phone OTP
+    r_phone_verify = client.post("/auth/otp/verify", json={
+        "challenge_id": phone_data["challenge_id"],
+        "otp": phone_data["dev_code"],
+    })
+    assert r_phone_verify.status_code == 200, r_phone_verify.text
+
+    # Signup with OTP-verified challenge IDs
+    r_signup = client.post("/auth/signup", json={
+        "email": email,
+        "full_name": full_name,
+        "password": password,
+        "phone": phone,
+        "email_challenge_id": email_data["challenge_id"],
+        "phone_challenge_id": phone_data["challenge_id"],
+    })
+    assert r_signup.status_code == 201, r_signup.text
+    return r_signup.json()
 
 
 # ─── get_rooms ────────────────────────────────────────────────────────────────
@@ -354,12 +396,8 @@ class TestCreateRoom:
         assert r.json()["hotel_name"] == "Test Hotel"
 
     def test_non_admin_cannot_create_room(self, client):
-        signup = client.post("/auth/signup", json={
-            "email": "user@rooms.com",
-            "full_name": "User",
-            "password": "UserPass123",
-        })
-        headers = auth_header(signup.json()["access_token"])
+        signup = otp_signup(client, "user@rooms.com", "User", "UserPass123", "9999999999")
+        headers = auth_header(signup["access_token"])
         r = client.post("/rooms", headers=headers, json=room_payload())
         assert r.status_code == 403
 
@@ -387,12 +425,8 @@ class TestUpdateRoom:
         admin_headers = admin_login(client)
         room = create_room_via_api(client, admin_headers)
 
-        signup = client.post("/auth/signup", json={
-            "email": "user2@rooms.com",
-            "full_name": "User2",
-            "password": "UserPass123",
-        })
-        user_headers = auth_header(signup.json()["access_token"])
+        signup = otp_signup(client, "user2@rooms.com", "User2", "UserPass123", "9999999998")
+        user_headers = auth_header(signup["access_token"])
         r = client.patch(f"/rooms/{room['id']}", headers=user_headers, json={"price": 1.0})
         assert r.status_code == 403
 
@@ -421,11 +455,7 @@ class TestDeleteRoom:
         room = create_room_via_api(client, headers)
 
         # Create a user and make a booking for that room
-        client.post("/auth/signup", json={
-            "email": "booker@rooms.com",
-            "full_name": "Booker",
-            "password": "BookerPass123",
-        })
+        otp_signup(client, "booker@rooms.com", "Booker", "BookerPass123", "9999999997")
         booking = models.Booking(
             booking_ref="REF-DELETE-TEST",
             user_name="Booker",
@@ -511,12 +541,8 @@ class TestUpdateRoomInventory:
         admin_headers = admin_login(client)
         room = create_room_via_api(client, admin_headers)
 
-        signup = client.post("/auth/signup", json={
-            "email": "inv_user@rooms.com",
-            "full_name": "InvUser",
-            "password": "InvUser123",
-        })
-        user_headers = auth_header(signup.json()["access_token"])
+        signup = otp_signup(client, "inv_user@rooms.com", "InvUser", "InvUser123", "9999999996")
+        user_headers = auth_header(signup["access_token"])
         r = client.post("/rooms/inventory", headers=user_headers, json=inventory_payload(room["id"]))
         assert r.status_code == 403
 

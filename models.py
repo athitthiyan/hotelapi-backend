@@ -87,6 +87,17 @@ class InventoryStatus(str, enum.Enum):
     BLOCKED = "blocked"
 
 
+class OtpFlow(str, enum.Enum):
+    SIGNUP = "signup"
+    PROFILE = "profile"
+    PASSWORD_RESET = "password_reset"
+
+
+class OtpChannel(str, enum.Enum):
+    EMAIL = "email"
+    PHONE = "phone"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -118,6 +129,7 @@ class User(Base):
     partner_hotels = relationship("PartnerHotel", back_populates="owner")
     bookings = relationship("Booking", back_populates="user")
     password_reset_tokens = relationship("PasswordResetToken", back_populates="user")
+    otp_challenges = relationship("OtpChallenge", back_populates="user")
 
 
 class PartnerHotel(Base):
@@ -497,3 +509,28 @@ class PasswordResetToken(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="password_reset_tokens")
+
+
+class OtpChallenge(Base):
+    __tablename__ = "otp_challenges"
+
+    id = Column(String(36), primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    flow = Column(Enum(OtpFlow, values_callable=enum_values), nullable=False, index=True)
+    channel = Column(Enum(OtpChannel, values_callable=enum_values), nullable=False, index=True)
+    recipient = Column(String(200), nullable=False, index=True)
+    otp_hash = Column(String(64), nullable=False)
+    attempts = Column(Integer, nullable=False, default=0)
+    max_attempts = Column(Integer, nullable=False, default=5)
+    resend_count = Column(Integer, nullable=False, default=0)
+    max_resends = Column(Integer, nullable=False, default=3)
+    resend_available_at = Column(DateTime(timezone=True), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+    locked_at = Column(DateTime(timezone=True), nullable=True)
+    consumed_at = Column(DateTime(timezone=True), nullable=True)
+    device_fingerprint = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    user = relationship("User", back_populates="otp_challenges")

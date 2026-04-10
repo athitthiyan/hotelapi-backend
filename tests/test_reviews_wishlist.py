@@ -63,15 +63,58 @@ def client(app):
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
-def _register_and_login(client: TestClient, email: str = "reviewer@test.com", password: str = "TestPass123") -> str:
+def _register_and_login(client: TestClient, email: str = "reviewer@test.com", phone: str = "+91 98765 43210", password: str = "TestPass123") -> str:
     reset_rate_limits()
-    client.post("/auth/signup", json={
+
+    # Request OTP for email
+    otp_email_resp = client.post("/auth/otp/request", json={
+        "flow": "signup",
+        "channel": "email",
+        "recipient": email,
+    })
+    assert otp_email_resp.status_code == 200
+    email_challenge_id = otp_email_resp.json()["challenge_id"]
+    email_dev_code = otp_email_resp.json()["dev_code"]
+
+    # Request OTP for phone
+    otp_phone_resp = client.post("/auth/otp/request", json={
+        "flow": "signup",
+        "channel": "phone",
+        "recipient": phone,
+    })
+    assert otp_phone_resp.status_code == 200
+    phone_challenge_id = otp_phone_resp.json()["challenge_id"]
+    phone_dev_code = otp_phone_resp.json()["dev_code"]
+
+    # Verify email OTP
+    verify_email_resp = client.post("/auth/otp/verify", json={
+        "challenge_id": email_challenge_id,
+        "otp": email_dev_code,
+    })
+    assert verify_email_resp.status_code == 200
+
+    # Verify phone OTP
+    verify_phone_resp = client.post("/auth/otp/verify", json={
+        "challenge_id": phone_challenge_id,
+        "otp": phone_dev_code,
+    })
+    assert verify_phone_resp.status_code == 200
+
+    # Sign up with verified challenges
+    signup_resp = client.post("/auth/signup", json={
         "email": email,
+        "phone": phone,
         "full_name": "Test User",
         "password": password,
+        "email_challenge_id": email_challenge_id,
+        "phone_challenge_id": phone_challenge_id,
     })
-    resp = client.post("/auth/login", json={"email": email, "password": password})
-    return resp.json()["access_token"]
+    assert signup_resp.status_code == 201
+
+    # Login
+    login_resp = client.post("/auth/login", json={"email": email, "password": password})
+    assert login_resp.status_code == 200
+    return login_resp.json()["access_token"]
 
 
 def _create_room(app) -> int:
@@ -191,7 +234,7 @@ class TestCreateReview:
     def test_create_review_wrong_user_booking(self, client, app):
         email_a = "a@test.com"
         email_b = "b@test.com"
-        token_b = _register_and_login(client, email_b, "TestPass123")
+        token_b = _register_and_login(client, email_b, password="TestPass123")
         room_id = _create_room(app)
         booking_id = _create_confirmed_booking(app, room_id, email_a)
 
@@ -232,8 +275,8 @@ class TestCreateReview:
 
         first_email = "count1@test.com"
         second_email = "count2@test.com"
-        first_token = _register_and_login(client, first_email)
-        second_token = _register_and_login(client, second_email)
+        first_token = _register_and_login(client, first_email, phone="+91 98765 43211")
+        second_token = _register_and_login(client, second_email, phone="+91 98765 43212")
         first_booking = _create_confirmed_booking(app, room_id, first_email)
         second_booking = _create_confirmed_booking(app, room_id, second_email)
 
@@ -325,8 +368,8 @@ class TestDeleteReview:
     def test_delete_another_user_review_forbidden(self, client, app):
         email_a = "owner@test.com"
         email_b = "thief@test.com"
-        token_a = _register_and_login(client, email_a)
-        token_b = _register_and_login(client, email_b, "TestPass123")
+        token_a = _register_and_login(client, email_a, phone="+91 98765 43213")
+        token_b = _register_and_login(client, email_b, phone="+91 98765 43214")
 
         room_id = _create_room(app)
         booking_id = _create_confirmed_booking(app, room_id, email_a)

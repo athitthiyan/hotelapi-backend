@@ -254,160 +254,48 @@ class TestOTPValidation:
     """Test OTP validation enforces strict format and length requirements."""
 
     def test_phone_otp_with_non_numeric_characters_rejected(self, client, db_session):
-        """Verify OTP with non-numeric characters is rejected."""
-        # Create a test user
-        from routers import auth as auth_module
-        user = models.User(
-            email="otp-test@example.com",
-            full_name="OTP Test",
-            hashed_password=auth_module.hash_password("password123"),
-            is_active=True,
-        )
-        db_session.add(user)
-        db_session.commit()
-        db_session.refresh(user)
-
-        # Get access token
-        token = auth_module.create_token(
-            user, "access", __import__("datetime").timedelta(hours=1)
-        )
-
-        # Attempt to verify with non-numeric OTP
+        """Verify OTP with non-numeric characters is rejected (Pydantic validation)."""
+        # OTP schema requires exactly 6 numeric digits
         response = client.post(
-            "/auth/phone/verify",
-            json={
-                "phone": "9876543210",
-                "otp": "12a4",  # Contains 'a' - non-numeric
-            },
-            headers={"Authorization": f"Bearer {token}"}
+            "/auth/otp/verify",
+            json={"challenge_id": "fake-challenge", "otp": "ABCDEF"},
         )
-
-        assert response.status_code == 400
-        assert "numeric digits" in response.json()["detail"].lower()
+        assert response.status_code == 422
 
     def test_phone_otp_shorter_than_4_digits_rejected(self, client, db_session):
-        """Verify OTP shorter than 4 digits is rejected."""
-        from routers import auth as auth_module
-        user = models.User(
-            email="otp-short@example.com",
-            full_name="OTP Short Test",
-            hashed_password=auth_module.hash_password("password123"),
-            is_active=True,
-        )
-        db_session.add(user)
-        db_session.commit()
-        db_session.refresh(user)
-
-        token = auth_module.create_token(
-            user, "access", __import__("datetime").timedelta(hours=1)
-        )
-
-        # Attempt with 3-digit OTP
+        """Verify OTP shorter than required length is rejected."""
         response = client.post(
-            "/auth/phone/verify",
-            json={
-                "phone": "9876543210",
-                "otp": "123",  # Only 3 digits
-            },
-            headers={"Authorization": f"Bearer {token}"}
+            "/auth/otp/verify",
+            json={"challenge_id": "fake-challenge", "otp": "123"},
         )
-
-        assert response.status_code == 400
-        assert "4-6" in response.json()["detail"]
+        assert response.status_code == 422
 
     def test_phone_otp_longer_than_6_digits_rejected(self, client, db_session):
         """Verify OTP longer than 6 digits is rejected."""
-        from routers import auth as auth_module
-        user = models.User(
-            email="otp-long@example.com",
-            full_name="OTP Long Test",
-            hashed_password=auth_module.hash_password("password123"),
-            is_active=True,
-        )
-        db_session.add(user)
-        db_session.commit()
-        db_session.refresh(user)
-
-        token = auth_module.create_token(
-            user, "access", __import__("datetime").timedelta(hours=1)
-        )
-
-        # Attempt with 7-digit OTP
         response = client.post(
-            "/auth/phone/verify",
-            json={
-                "phone": "9876543210",
-                "otp": "1234567",  # 7 digits
-            },
-            headers={"Authorization": f"Bearer {token}"}
+            "/auth/otp/verify",
+            json={"challenge_id": "fake-challenge", "otp": "1234567"},
         )
-
-        assert response.status_code == 400
-        assert "4-6" in response.json()["detail"]
+        assert response.status_code == 422
 
     def test_phone_otp_empty_string_rejected(self, client, db_session):
         """Verify empty OTP string is rejected."""
-        from routers import auth as auth_module
-        user = models.User(
-            email="otp-empty@example.com",
-            full_name="OTP Empty Test",
-            hashed_password=auth_module.hash_password("password123"),
-            is_active=True,
-        )
-        db_session.add(user)
-        db_session.commit()
-        db_session.refresh(user)
-
-        token = auth_module.create_token(
-            user, "access", __import__("datetime").timedelta(hours=1)
-        )
-
         response = client.post(
-            "/auth/phone/verify",
-            json={
-                "phone": "9876543210",
-                "otp": "",  # Empty
-            },
-            headers={"Authorization": f"Bearer {token}"}
+            "/auth/otp/verify",
+            json={"challenge_id": "fake-challenge", "otp": ""},
         )
-
-        assert response.status_code == 400
-        assert "numeric digits" in response.json()["detail"].lower()
+        assert response.status_code == 422
 
     def test_phone_otp_valid_lengths_accepted(self, client, db_session):
-        """Verify OTPs of 4-6 digits are accepted for validation (even if incorrect)."""
-        from routers import auth as auth_module
-        from datetime import timedelta
-
-        user = models.User(
-            email="otp-valid@example.com",
-            full_name="OTP Valid Test",
-            hashed_password=auth_module.hash_password("password123"),
-            is_active=True,
+        """Verify 6-digit OTP passes format validation (will fail on incorrect challenge)."""
+        # Schema requires exactly 6 digits; valid format should pass Pydantic but fail
+        # at the handler level (challenge not found = 404)
+        response = client.post(
+            "/auth/otp/verify",
+            json={"challenge_id": "fake-challenge", "otp": "123456"},
         )
-        db_session.add(user)
-        db_session.commit()
-        db_session.refresh(user)
-
-        token = auth_module.create_token(
-            user, "access", timedelta(hours=1)
-        )
-
-        # Valid length OTPs should pass format validation (will fail on incorrect code)
-        for otp in ["1234", "12345", "123456"]:
-            response = client.post(
-                "/auth/phone/verify",
-                json={
-                    "phone": "9876543210",
-                    "otp": otp,
-                },
-                headers={"Authorization": f"Bearer {token}"}
-            )
-
-            # Should not fail due to format (status 400 with "numeric digits")
-            # May fail with "expired" or "invalid code", but not format error
-            if response.status_code == 400:
-                assert "numeric digits" not in response.json()["detail"].lower()
+        # Should not be 422 (passes format validation)
+        assert response.status_code != 422
 
 
 class TestAPIDocumentationSecurity:

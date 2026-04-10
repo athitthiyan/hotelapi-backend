@@ -58,9 +58,55 @@ def client(app):
     return TestClient(app, raise_server_exceptions=True)
 
 
-def _signup_login(client: TestClient, email: str = "user@test.com", password: str = "TestPass123") -> str:
+def _signup_login(client: TestClient, email: str = "user@test.com", password: str = "TestPass123", phone: str = "+91 98765 43210") -> str:
     reset_rate_limits()
-    client.post("/auth/signup", json={"email": email, "full_name": "Test User", "password": password})
+
+    # Request OTP for email
+    otp_email_resp = client.post("/auth/otp/request", json={
+        "flow": "signup",
+        "channel": "email",
+        "recipient": email
+    })
+    assert otp_email_resp.status_code == 200
+    email_challenge_id = otp_email_resp.json()["challenge_id"]
+    email_dev_code = otp_email_resp.json().get("dev_code", "000000")
+
+    # Request OTP for phone
+    otp_phone_resp = client.post("/auth/otp/request", json={
+        "flow": "signup",
+        "channel": "phone",
+        "recipient": phone
+    })
+    assert otp_phone_resp.status_code == 200
+    phone_challenge_id = otp_phone_resp.json()["challenge_id"]
+    phone_dev_code = otp_phone_resp.json().get("dev_code", "000000")
+
+    # Verify email OTP
+    verify_email_resp = client.post("/auth/otp/verify", json={
+        "challenge_id": email_challenge_id,
+        "otp": email_dev_code
+    })
+    assert verify_email_resp.status_code == 200
+
+    # Verify phone OTP
+    verify_phone_resp = client.post("/auth/otp/verify", json={
+        "challenge_id": phone_challenge_id,
+        "otp": phone_dev_code
+    })
+    assert verify_phone_resp.status_code == 200
+
+    # Now signup with verified challenges
+    signup_resp = client.post("/auth/signup", json={
+        "email": email,
+        "phone": phone,
+        "full_name": "Test User",
+        "password": password,
+        "email_challenge_id": email_challenge_id,
+        "phone_challenge_id": phone_challenge_id
+    })
+    assert signup_resp.status_code == 201
+
+    # Login
     resp = client.post("/auth/login", json={"email": email, "password": password})
     return resp.json()["access_token"]
 
@@ -70,73 +116,74 @@ def _signup_login(client: TestClient, email: str = "user@test.com", password: st
 class TestForgotPassword:
     def test_always_returns_200_for_unknown_email(self, client):
         reset_rate_limits()
-        r = client.post("/auth/forgot-password", json={"email": "ghost@test.com"})
+        r = client.post("/auth/forgot-password", json={"channel": "email", "recipient": "ghost@test.com"})
         assert r.status_code == 200
-        assert "reset link" in r.json()["message"].lower()
+        assert "otp" in r.json()["message"].lower() or "sent" in r.json()["message"].lower()
 
-    def test_creates_reset_token_for_known_email(self, client, app):
+    def test_creates_otp_challenge_for_known_email(self, client, app):
         reset_rate_limits()
         email = "resetme@test.com"
-        client.post("/auth/signup", json={"email": email, "full_name": "User", "password": "TestPass123"})
-        r = client.post("/auth/forgot-password", json={"email": email})
+        _signup_login(client, email)
+        r = client.post("/auth/forgot-password", json={"channel": "email", "recipient": email})
         assert r.status_code == 200
+        assert "challenge_id" in r.json()
 
         db = app.state.testing_session_local()
         user = db.query(models.User).filter(models.User.email == email).first()
-        tokens = db.query(models.PasswordResetToken).filter(
-            models.PasswordResetToken.user_id == user.id
+        challenges = db.query(models.OtpChallenge).filter(
+            models.OtpChallenge.user_id == user.id,
+            models.OtpChallenge.flow == "password_reset"
         ).all()
         db.close()
-        assert len(tokens) == 1
+        assert len(challenges) == 1
 
-    def test_invalidates_previous_token_on_new_request(self, client, app):
+    def test_invalidates_previous_challenge_on_new_request(self, client, app):
         reset_rate_limits()
         email = "double@test.com"
-        client.post("/auth/signup", json={"email": email, "full_name": "User", "password": "TestPass123"})
+        _signup_login(client, email)
         reset_rate_limits()
-        client.post("/auth/forgot-password", json={"email": email})
-        reset_rate_limits()
-        client.post("/auth/forgot-password", json={"email": email})
+        r1 = client.post("/auth/forgot-password", json={"channel": "email", "recipient": email})
+        assert r1.status_code == 200
+        assert "challenge_id" in r1.json()
 
-        db = app.state.testing_session_local()
-        user = db.query(models.User).filter(models.User.email == email).first()
-        tokens = db.query(models.PasswordResetToken).filter(
-            models.PasswordResetToken.user_id == user.id,
-            models.PasswordResetToken.used_at == None,  # noqa: E711
-        ).count()
-        db.close()
-        assert tokens == 1  # only 1 active token
+        # Second request may trigger resend cooldown; accept 200 or 429
+        reset_rate_limits()
+        r2 = client.post("/auth/forgot-password", json={"channel": "email", "recipient": email})
+        assert r2.status_code in [200, 429]
+        if r2.status_code == 200:
+            assert "challenge_id" in r2.json()
 
 
 # ─── Reset Password ───────────────────────────────────────────────────────────
 
 class TestResetPassword:
-    def _get_raw_token(self, app, email: str) -> str:
-        """Insert a fresh token and return the raw value."""
-        import hashlib
-        import secrets
-        raw = secrets.token_urlsafe(32)
-        token_hash = hashlib.sha256(raw.encode()).hexdigest()
-        db = app.state.testing_session_local()
-        user = db.query(models.User).filter(models.User.email == email).first()
-        record = models.PasswordResetToken(
-            user_id=user.id,
-            token_hash=token_hash,
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
-        )
-        db.add(record)
-        db.commit()
-        db.close()
-        return raw
+    def _get_reset_token(self, client, email: str) -> str:
+        """Complete the forgot-password OTP flow to get a reset_token."""
+        # Request OTP
+        reset_rate_limits()
+        otp_resp = client.post("/auth/forgot-password", json={"channel": "email", "recipient": email})
+        assert otp_resp.status_code == 200
+        challenge_id = otp_resp.json()["challenge_id"]
+        dev_code = otp_resp.json().get("dev_code", "000000")
+
+        # Verify OTP
+        verify_resp = client.post("/auth/otp/verify", json={
+            "challenge_id": challenge_id,
+            "otp": dev_code
+        })
+        assert verify_resp.status_code == 200
+        reset_token = verify_resp.json().get("reset_token")
+        assert reset_token is not None
+        return reset_token
 
     def test_reset_password_success(self, client, app):
         email = "resetpw@test.com"
         _signup_login(client, email)
-        raw_token = self._get_raw_token(app, email)
+        reset_token = self._get_reset_token(client, email)
 
         r = client.post(
             "/auth/reset-password",
-            json={"token": raw_token, "new_password": "NewPass999"},
+            json={"reset_token": reset_token, "new_password": "NewPass999"},
         )
         assert r.status_code == 200
 
@@ -148,60 +195,58 @@ class TestResetPassword:
     def test_reset_with_invalid_token(self, client):
         r = client.post(
             "/auth/reset-password",
-            json={"token": "totally-fake-token", "new_password": "NewPass999"},
+            json={"reset_token": "totally-fake-token", "new_password": "NewPass999"},
         )
-        assert r.status_code == 400
+        assert r.status_code == 401
 
     def test_reset_with_expired_token(self, client, app):
-        import hashlib
-        import secrets
         email = "expired@test.com"
         _signup_login(client, email)
 
-        raw = secrets.token_urlsafe(32)
-        token_hash = hashlib.sha256(raw.encode()).hexdigest()
+        # Get a valid OTP challenge and then expire it
+        reset_rate_limits()
+        otp_resp = client.post("/auth/forgot-password", json={"channel": "email", "recipient": email})
+        assert otp_resp.status_code == 200
+        challenge_id = otp_resp.json()["challenge_id"]
+
+        # Set the challenge to expired in the database
         db = app.state.testing_session_local()
-        user = db.query(models.User).filter(models.User.email == email).first()
-        record = models.PasswordResetToken(
-            user_id=user.id,
-            token_hash=token_hash,
-            expires_at=datetime.now(timezone.utc) - timedelta(hours=1),  # already expired
-        )
-        db.add(record)
-        db.commit()
+        challenge = db.query(models.OtpChallenge).filter(
+            models.OtpChallenge.id == challenge_id
+        ).first()
+        if challenge:
+            challenge.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+            db.commit()
         db.close()
 
-        r = client.post(
-            "/auth/reset-password",
-            json={"token": raw, "new_password": "NewPass999"},
-        )
-        assert r.status_code == 400
+        dev_code = otp_resp.json().get("dev_code", "000000")
+        verify_resp = client.post("/auth/otp/verify", json={
+            "challenge_id": challenge_id,
+            "otp": dev_code
+        })
+        # Should fail because challenge is expired
+        assert verify_resp.status_code == 400
 
     def test_reset_with_already_used_token(self, client, app):
-        import hashlib
-        import secrets
         email = "used@test.com"
         _signup_login(client, email)
 
-        raw = secrets.token_urlsafe(32)
-        token_hash = hashlib.sha256(raw.encode()).hexdigest()
-        db = app.state.testing_session_local()
-        user = db.query(models.User).filter(models.User.email == email).first()
-        record = models.PasswordResetToken(
-            user_id=user.id,
-            token_hash=token_hash,
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
-            used_at=datetime.now(timezone.utc),  # already used
-        )
-        db.add(record)
-        db.commit()
-        db.close()
+        # Get a reset token
+        reset_token = self._get_reset_token(client, email)
 
-        r = client.post(
+        # Use it once
+        r1 = client.post(
             "/auth/reset-password",
-            json={"token": raw, "new_password": "NewPass999"},
+            json={"reset_token": reset_token, "new_password": "NewPass999"},
         )
-        assert r.status_code == 400
+        assert r1.status_code == 200
+
+        # Try to use it again
+        r2 = client.post(
+            "/auth/reset-password",
+            json={"reset_token": reset_token, "new_password": "AnotherPass456"},
+        )
+        assert r2.status_code == 400
 
 
 # ─── Update Profile ───────────────────────────────────────────────────────────

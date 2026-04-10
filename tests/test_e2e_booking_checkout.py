@@ -104,12 +104,51 @@ def test_e2e_customer_booking_to_confirmation_flow(client, db_session):
     assert room_response.status_code == 201
     room_id = room_response.json()["id"]
 
+    # Request OTP for email
+    otp_email_resp = client.post("/auth/otp/request", json={
+        "flow": "signup",
+        "channel": "email",
+        "recipient": "customer-e2e@example.com",
+    })
+    assert otp_email_resp.status_code == 200
+    email_challenge_id = otp_email_resp.json()["challenge_id"]
+    email_dev_code = otp_email_resp.json()["dev_code"]
+
+    # Request OTP for phone
+    phone = "+91 98765 43210"
+    otp_phone_resp = client.post("/auth/otp/request", json={
+        "flow": "signup",
+        "channel": "phone",
+        "recipient": phone,
+    })
+    assert otp_phone_resp.status_code == 200
+    phone_challenge_id = otp_phone_resp.json()["challenge_id"]
+    phone_dev_code = otp_phone_resp.json()["dev_code"]
+
+    # Verify email OTP
+    verify_email_resp = client.post("/auth/otp/verify", json={
+        "challenge_id": email_challenge_id,
+        "otp": email_dev_code,
+    })
+    assert verify_email_resp.status_code == 200
+
+    # Verify phone OTP
+    verify_phone_resp = client.post("/auth/otp/verify", json={
+        "challenge_id": phone_challenge_id,
+        "otp": phone_dev_code,
+    })
+    assert verify_phone_resp.status_code == 200
+
+    # Sign up with verified challenges
     signup = client.post(
         "/auth/signup",
         json={
             "email": "customer-e2e@example.com",
+            "phone": phone,
             "full_name": "Customer E2E",
             "password": "CustomerPass123",
+            "email_challenge_id": email_challenge_id,
+            "phone_challenge_id": phone_challenge_id,
         },
     )
     assert signup.status_code == 201

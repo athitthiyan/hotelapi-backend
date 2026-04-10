@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import bcrypt
 import models
 from routers.auth import hash_password
+from services.rate_limit_service import reset_rate_limits
 
 
 def auth_header(token: str) -> dict[str, str]:
@@ -39,6 +40,47 @@ def create_partner_and_token(client):
     register = client.post("/partner/register", json=partner_payload())
     assert register.status_code == 201
     return register.json()["access_token"]
+
+
+def otp_signup(client, email: str, full_name: str, password: str, phone: str):
+    """Helper to signup a user via OTP flow."""
+    reset_rate_limits()
+
+    # Request OTP for email
+    r_email = client.post("/auth/otp/request", json={"flow": "signup", "channel": "email", "recipient": email})
+    assert r_email.status_code == 200, r_email.text
+    email_data = r_email.json()
+
+    # Verify email OTP
+    r_email_verify = client.post("/auth/otp/verify", json={
+        "challenge_id": email_data["challenge_id"],
+        "otp": email_data["dev_code"],
+    })
+    assert r_email_verify.status_code == 200, r_email_verify.text
+
+    # Request OTP for phone
+    r_phone = client.post("/auth/otp/request", json={"flow": "signup", "channel": "phone", "recipient": phone})
+    assert r_phone.status_code == 200, r_phone.text
+    phone_data = r_phone.json()
+
+    # Verify phone OTP
+    r_phone_verify = client.post("/auth/otp/verify", json={
+        "challenge_id": phone_data["challenge_id"],
+        "otp": phone_data["dev_code"],
+    })
+    assert r_phone_verify.status_code == 200, r_phone_verify.text
+
+    # Signup with OTP-verified challenge IDs
+    r_signup = client.post("/auth/signup", json={
+        "email": email,
+        "full_name": full_name,
+        "password": password,
+        "phone": phone,
+        "email_challenge_id": email_data["challenge_id"],
+        "phone_challenge_id": phone_data["challenge_id"],
+    })
+    assert r_signup.status_code == 201, r_signup.text
+    return r_signup.json()
 
 
 def create_room_for_partner(client, token: str):
@@ -115,12 +157,9 @@ class TestPartnerAuth:
         assert response.json()["detail"] == "Partner access required"
 
     def test_partner_route_blocks_guest_token(self, client):
-        signup = client.post(
-            "/auth/signup",
-            json={"email": "guest2@example.com", "full_name": "Guest Two", "password": "GuestPass123"},
-        )
+        signup = otp_signup(client, "guest2@example.com", "Guest Two", "GuestPass123", "9999800001")
 
-        response = client.get("/partner/hotel", headers=auth_header(signup.json()["access_token"]))
+        response = client.get("/partner/hotel", headers=auth_header(signup["access_token"]))
         assert response.status_code == 403
         assert response.json()["detail"] == "Partner access required"
 

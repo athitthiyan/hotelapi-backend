@@ -14,11 +14,56 @@ def auth_header(access_token: str) -> dict:
     return {"Authorization": f"Bearer {access_token}"}
 
 
-def signup_and_login(client, email: str, password: str = "StrongPass123") -> str:
-    client.post(
+def signup_and_login(client, email: str, password: str = "StrongPass123", phone: str = "+91 98765 43210") -> str:
+    # Request OTP for email
+    otp_email_resp = client.post("/auth/otp/request", json={
+        "flow": "signup",
+        "channel": "email",
+        "recipient": email,
+    })
+    assert otp_email_resp.status_code == 200
+    email_challenge_id = otp_email_resp.json()["challenge_id"]
+    email_dev_code = otp_email_resp.json()["dev_code"]
+
+    # Request OTP for phone
+    otp_phone_resp = client.post("/auth/otp/request", json={
+        "flow": "signup",
+        "channel": "phone",
+        "recipient": phone,
+    })
+    assert otp_phone_resp.status_code == 200
+    phone_challenge_id = otp_phone_resp.json()["challenge_id"]
+    phone_dev_code = otp_phone_resp.json()["dev_code"]
+
+    # Verify email OTP
+    verify_email_resp = client.post("/auth/otp/verify", json={
+        "challenge_id": email_challenge_id,
+        "otp": email_dev_code,
+    })
+    assert verify_email_resp.status_code == 200
+
+    # Verify phone OTP
+    verify_phone_resp = client.post("/auth/otp/verify", json={
+        "challenge_id": phone_challenge_id,
+        "otp": phone_dev_code,
+    })
+    assert verify_phone_resp.status_code == 200
+
+    # Sign up with verified challenges
+    signup = client.post(
         "/auth/signup",
-        json={"email": email, "full_name": "Tier One User", "password": password},
+        json={
+            "email": email,
+            "phone": phone,
+            "full_name": "Tier One User",
+            "password": password,
+            "email_challenge_id": email_challenge_id,
+            "phone_challenge_id": phone_challenge_id,
+        },
     )
+    assert signup.status_code == 201
+
+    # Login
     login = client.post("/auth/login", json={"email": email, "password": password})
     assert login.status_code == 200
     return login.json()["access_token"]

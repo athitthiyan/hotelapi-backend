@@ -17,6 +17,12 @@ import models
 import schemas
 from database import get_db, settings
 from services.audit_service import write_audit_log
+from services.otp_service import (
+    build_challenge_response,
+    issue_otp_challenge,
+    normalize_recipient,
+    verify_otp_challenge,
+)
 from services.payment_state_service import attach_bookings_lifecycle_state
 from services.rate_limit_service import enforce_rate_limit
 
@@ -168,6 +174,47 @@ def clear_phone_otp(user: models.User) -> None:
     user.phone_otp_attempts = 0
 
 
+def get_verified_challenge(
+    db: Session,
+    *,
+    challenge_id: str,
+    flow: schemas.OtpFlow,
+    channel: schemas.OtpChannel,
+    recipient: str,
+    user_id: int | None,
+) -> models.OtpChallenge:
+    challenge = db.query(models.OtpChallenge).filter(
+        models.OtpChallenge.id == challenge_id,
+        models.OtpChallenge.flow == flow.value,
+        models.OtpChallenge.channel == channel.value,
+    ).first()
+    if not challenge:
+        raise HTTPException(status_code=400, detail="Verification challenge is invalid.")
+    if user_id is None:
+        if challenge.user_id is not None:
+            raise HTTPException(status_code=400, detail="Verification challenge is invalid.")
+    elif challenge.user_id != user_id:
+        raise HTTPException(status_code=400, detail="Verification challenge is invalid.")
+    if challenge.recipient != recipient:
+        raise HTTPException(status_code=400, detail="Verification challenge does not match the submitted contact.")
+    if not challenge.verified_at:
+        raise HTTPException(status_code=400, detail="Verification challenge has not been completed.")
+    if challenge.consumed_at:
+        raise HTTPException(status_code=400, detail="Verification challenge has already been used.")
+    return challenge
+
+
+def consume_challenge(challenge: models.OtpChallenge) -> None:
+    challenge.consumed_at = utc_now()
+
+
+def revoke_all_refresh_tokens(db: Session, user_id: int) -> None:
+    db.query(models.RefreshToken).filter(
+        models.RefreshToken.user_id == user_id,
+        models.RefreshToken.revoked.is_(False),
+    ).update({"revoked": True})
+
+
 def decode_token(token: str, expected_type: str) -> dict:
     try:
         payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
@@ -260,20 +307,46 @@ def _request_meta(request: Request) -> dict:
 @router.post("/signup", response_model=schemas.TokenResponse, status_code=201)
 def signup(payload: schemas.UserSignup, request: Request, response: Response, db: Session = Depends(get_db)):
     normalized_email = normalize_email(payload.email)
+    normalized_phone = normalize_phone(payload.phone)
     enforce_rate_limit("auth:signup", request, subject=normalized_email)
     existing_user = db.query(models.User).filter(models.User.email == normalized_email).first()
     if existing_user:
         raise HTTPException(status_code=409, detail="Email already registered")
+    existing_phone = db.query(models.User).filter(models.User.phone == normalized_phone).first()
+    if existing_phone:
+        raise HTTPException(status_code=409, detail="Phone number already registered")
+
+    email_challenge = get_verified_challenge(
+        db,
+        challenge_id=payload.email_challenge_id,
+        flow=schemas.OtpFlow.SIGNUP,
+        channel=schemas.OtpChannel.EMAIL,
+        recipient=normalized_email,
+        user_id=None,
+    )
+    phone_challenge = get_verified_challenge(
+        db,
+        challenge_id=payload.phone_challenge_id,
+        flow=schemas.OtpFlow.SIGNUP,
+        channel=schemas.OtpChannel.PHONE,
+        recipient=normalized_phone,
+        user_id=None,
+    )
 
     user = models.User(
         email=normalized_email,
+        phone=normalized_phone,
         full_name=payload.full_name,
         hashed_password=hash_password(payload.password),
+        phone_verified=True,
+        is_email_verified=True,
         is_admin=False,
         is_partner=False,
         is_active=True,
     )
     db.add(user)
+    consume_challenge(email_challenge)
+    consume_challenge(phone_challenge)
     db.commit()
     db.refresh(user)
     resp = build_token_response(user, db)
@@ -482,71 +555,122 @@ def my_bookings(
 
 # ─── Profile ──────────────────────────────────────────────────────────────────
 
-@router.post("/phone/request-otp", response_model=schemas.PhoneOtpResponse)
-def request_phone_otp(
-    payload: schemas.PhoneOtpRequest,
+@router.post("/otp/request", response_model=schemas.OtpChallengeResponse)
+def request_otp(
+    payload: schemas.OtpChallengeStartRequest,
     request: Request,
-    user: models.User = Depends(get_current_user),
+    current_user: models.User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ):
-    phone = normalize_phone(payload.phone)
-    # Rate limiting enforced per user per phone number to prevent OTP brute-force attacks
-    enforce_rate_limit("auth:phone-otp", request, subject=f"{user.id}:{phone}")
-    otp = f"{secrets.randbelow(1_000_000):06d}"
-    user.pending_phone = phone
-    user.phone_otp_hash = hash_phone_otp(phone, otp)
-    user.phone_otp_expires_at = utc_now() + timedelta(minutes=5)
-    user.phone_otp_attempts = 0
-    if user.phone != phone:
-        user.phone_verified = False
-    db.commit()
+    user_id = current_user.id if current_user and payload.flow == schemas.OtpFlow.PROFILE else None
+    recipient = normalize_recipient(payload.channel, payload.recipient)
 
-    response = schemas.PhoneOtpResponse(
-        message="Verification code sent to your phone.",
-        phone=phone,
-        expires_in_seconds=300,
+    if payload.flow == schemas.OtpFlow.PROFILE:
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Authentication required for profile verification.")
+        if payload.channel == schemas.OtpChannel.EMAIL:
+            if normalize_email(current_user.email) == recipient and current_user.is_email_verified:
+                raise HTTPException(status_code=400, detail="This email address is already verified.")
+            conflict = db.query(models.User).filter(
+                models.User.id != current_user.id,
+                models.User.email == recipient,
+            ).first()
+            if conflict:
+                raise HTTPException(status_code=409, detail="Email already registered")
+        else:
+            if normalize_phone(current_user.phone or "") == recipient and current_user.phone_verified:
+                raise HTTPException(status_code=400, detail="This phone number is already verified.")
+            conflict = db.query(models.User).filter(
+                models.User.id != current_user.id,
+                models.User.phone == recipient,
+            ).first()
+            if conflict:
+                raise HTTPException(status_code=409, detail="Phone number already registered")
+    elif payload.flow == schemas.OtpFlow.SIGNUP:
+        if payload.channel == schemas.OtpChannel.EMAIL:
+            if db.query(models.User).filter(models.User.email == recipient).first():
+                raise HTTPException(status_code=409, detail="Email already registered")
+        else:
+            if db.query(models.User).filter(models.User.phone == recipient).first():
+                raise HTTPException(status_code=409, detail="Phone number already registered")
+    elif payload.flow == schemas.OtpFlow.PASSWORD_RESET:
+        if payload.channel == schemas.OtpChannel.EMAIL:
+            user = db.query(models.User).filter(models.User.email == recipient, models.User.is_active.is_(True)).first()
+        else:
+            user = db.query(models.User).filter(models.User.phone == recipient, models.User.phone_verified.is_(True), models.User.is_active.is_(True)).first()
+        if not user:
+            generic_challenge = models.OtpChallenge(
+                id=str(uuid.uuid4()),
+                user_id=None,
+                flow=payload.flow.value,
+                channel=payload.channel.value,
+                recipient=recipient,
+                otp_hash="masked",
+                attempts=0,
+                max_attempts=5,
+                resend_count=0,
+                max_resends=3,
+                resend_available_at=utc_now() + timedelta(seconds=30),
+                expires_at=utc_now() + timedelta(minutes=5),
+                device_fingerprint=payload.device_fingerprint,
+            )
+            return build_challenge_response(generic_challenge, message="If the account exists, an OTP has been sent.")
+        user_id = user.id
+
+    challenge, dev_code = issue_otp_challenge(
+        db,
+        request,
+        flow=payload.flow,
+        channel=payload.channel,
+        recipient=recipient,
+        secret_key=settings.secret_key,
+        user_id=user_id,
+        device_fingerprint=payload.device_fingerprint,
     )
-    if settings.app_env.lower() != "production":
-        response.dev_code = otp
-    return response
+    db.commit()
+    return build_challenge_response(
+        challenge,
+        message="OTP sent successfully.",
+        dev_code=dev_code if settings.app_env.lower() != "production" else None,
+    )
 
 
-@router.post("/phone/verify", response_model=schemas.UserDetailResponse)
-def verify_phone_otp(
-    payload: schemas.PhoneOtpVerifyRequest,
-    user: models.User = Depends(get_current_user),
+@router.post("/otp/verify", response_model=schemas.OtpChallengeVerifyResponse)
+def verify_otp(
+    payload: schemas.OtpChallengeVerifyRequest,
+    request: Request,
+    current_user: models.User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ):
-    # Validate OTP format: must be numeric and 4-6 digits
-    # This prevents type confusion attacks and validates input early
-    if not payload.otp or not payload.otp.isdigit() or 4 > len(payload.otp) or len(payload.otp) > 6:
-        raise HTTPException(status_code=400, detail="OTP must be 4-6 numeric digits")
-
-    phone = normalize_phone(payload.phone)
-    now = utc_now()
-    if (
-        not user.pending_phone
-        or user.pending_phone != phone
-        or not user.phone_otp_hash
-        or not user.phone_otp_expires_at
-        or ensure_aware_utc(user.phone_otp_expires_at) < now
-    ):
-        clear_phone_otp(user)
-        db.commit()
-        raise HTTPException(status_code=400, detail="Phone verification code expired")
-    if user.phone_otp_attempts >= 5:
-        raise HTTPException(status_code=429, detail="Too many phone verification attempts")
-    if not secrets.compare_digest(user.phone_otp_hash, hash_phone_otp(phone, payload.otp)):
-        user.phone_otp_attempts += 1
-        db.commit()
-        raise HTTPException(status_code=400, detail="Invalid phone verification code")
-
-    user.phone = phone
-    user.phone_verified = True
-    clear_phone_otp(user)
+    challenge = verify_otp_challenge(
+        db,
+        request,
+        challenge_id=payload.challenge_id,
+        otp=payload.otp,
+        secret_key=settings.secret_key,
+        user_id=current_user.id if current_user else None,
+    )
+    reset_token = None
+    if challenge.flow == schemas.OtpFlow.PASSWORD_RESET.value and challenge.user_id:
+        reset_token = jwt.encode(
+            {
+                "sub": str(challenge.user_id),
+                "challenge_id": challenge.id,
+                "token_type": "password_reset_session",
+                "exp": utc_now() + timedelta(minutes=15),
+            },
+            settings.secret_key,
+            algorithm=ALGORITHM,
+        )
     db.commit()
-    db.refresh(user)
-    return user
+    return schemas.OtpChallengeVerifyResponse(
+        message="OTP verified successfully.",
+        challenge_id=challenge.id,
+        flow=schemas.OtpFlow(challenge.flow),
+        channel=schemas.OtpChannel(challenge.channel),
+        recipient=challenge.recipient,
+        reset_token=reset_token,
+    )
 
 
 @router.put("/me", response_model=schemas.UserDetailResponse)
@@ -557,15 +681,43 @@ def update_profile(
 ):
     if payload.full_name is not None:
         user.full_name = payload.full_name
+    if payload.email is not None:
+        email = normalize_email(payload.email)
+        if email != normalize_email(user.email):
+            if db.query(models.User).filter(models.User.id != user.id, models.User.email == email).first():
+                raise HTTPException(status_code=409, detail="Email already registered")
+            if not payload.email_challenge_id:
+                raise HTTPException(status_code=400, detail="Verify this email address with OTP first")
+            email_challenge = get_verified_challenge(
+                db,
+                challenge_id=payload.email_challenge_id,
+                flow=schemas.OtpFlow.PROFILE,
+                channel=schemas.OtpChannel.EMAIL,
+                recipient=email,
+                user_id=user.id,
+            )
+            user.email = email
+            user.is_email_verified = True
+            consume_challenge(email_challenge)
     if payload.phone is not None:
         phone = normalize_phone(payload.phone)
         if not phone:
             raise HTTPException(status_code=400, detail="Phone number is required")
-        if user.phone != phone or not user.phone_verified:
-            raise HTTPException(
-                status_code=400,
-                detail="Verify this phone number with OTP first",
+        if phone != normalize_phone(user.phone or ""):
+            if db.query(models.User).filter(models.User.id != user.id, models.User.phone == phone).first():
+                raise HTTPException(status_code=409, detail="Phone number already registered")
+            if not payload.phone_challenge_id:
+                raise HTTPException(status_code=400, detail="Verify this phone number with OTP first")
+            phone_challenge = get_verified_challenge(
+                db,
+                challenge_id=payload.phone_challenge_id,
+                flow=schemas.OtpFlow.PROFILE,
+                channel=schemas.OtpChannel.PHONE,
+                recipient=phone,
+                user_id=user.id,
             )
+            consume_challenge(phone_challenge)
+            user.phone_verified = True
         user.phone = phone
     if payload.avatar_url is not None:
         user.avatar_url = payload.avatar_url
@@ -593,19 +745,62 @@ def _hash_reset_token(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode()).hexdigest()
 
 
-@router.post("/forgot-password", response_model=schemas.MessageResponse)
+@router.post("/forgot-password", response_model=schemas.OtpChallengeResponse)
 def forgot_password(
     payload: schemas.ForgotPasswordRequest,
     request: Request,
     db: Session = Depends(get_db),
 ):
+    recipient = normalize_recipient(payload.channel, payload.recipient)
+    enforce_rate_limit("auth:forgot-password", request, subject=f"{payload.channel.value}:{recipient}")
+    if payload.channel == schemas.OtpChannel.EMAIL:
+        user = db.query(models.User).filter(models.User.email == recipient, models.User.is_active.is_(True)).first()
+    else:
+        user = db.query(models.User).filter(
+            models.User.phone == recipient,
+            models.User.phone_verified.is_(True),
+            models.User.is_active.is_(True),
+        ).first()
+    if not user:
+        generic = models.OtpChallenge(
+            id=str(uuid.uuid4()),
+            user_id=None,
+            flow=schemas.OtpFlow.PASSWORD_RESET.value,
+            channel=payload.channel.value,
+            recipient=recipient,
+            otp_hash="masked",
+            attempts=0,
+            max_attempts=5,
+            resend_count=0,
+            max_resends=3,
+            resend_available_at=utc_now() + timedelta(seconds=30),
+            expires_at=utc_now() + timedelta(minutes=5),
+            device_fingerprint=payload.device_fingerprint,
+        )
+        return build_challenge_response(generic, message="If the account exists, an OTP has been sent.")
+
+    challenge, dev_code = issue_otp_challenge(
+        db,
+        request,
+        flow=schemas.OtpFlow.PASSWORD_RESET,
+        channel=payload.channel,
+        recipient=recipient,
+        secret_key=settings.secret_key,
+        user_id=user.id,
+        device_fingerprint=payload.device_fingerprint,
+    )
+    db.commit()
+    return build_challenge_response(
+        challenge,
+        message="If the account exists, an OTP has been sent.",
+        dev_code=dev_code if settings.app_env.lower() != "production" else None,
+    )
     enforce_rate_limit("auth:forgot-password", request, subject=payload.email.lower())
     user = db.query(models.User).filter(models.User.email == normalize_email(payload.email)).first()
     # Always return 200 to prevent email enumeration
     if user and user.is_active:
         raw_token = secrets.token_urlsafe(32)
         token_hash = _hash_reset_token(raw_token)
-        from datetime import timedelta
         expires_at = utc_now() + timedelta(hours=1)
         # Invalidate previous tokens for this user
         db.query(models.PasswordResetToken).filter(
@@ -633,8 +828,30 @@ def forgot_password(
 @router.post("/reset-password", response_model=schemas.MessageResponse)
 def reset_password(
     payload: schemas.ResetPasswordRequest,
+    response: Response,
     db: Session = Depends(get_db),
 ):
+    session_payload = decode_token(payload.reset_token, "password_reset_session")
+    challenge_id = session_payload.get("challenge_id")
+    user_id = int(session_payload.get("sub"))
+    challenge = db.query(models.OtpChallenge).filter(
+        models.OtpChallenge.id == challenge_id,
+        models.OtpChallenge.user_id == user_id,
+        models.OtpChallenge.flow == schemas.OtpFlow.PASSWORD_RESET.value,
+        models.OtpChallenge.verified_at.is_not(None),
+        models.OtpChallenge.consumed_at.is_(None),
+    ).first()
+    if not challenge:
+        raise HTTPException(status_code=400, detail="Reset session is invalid or has expired")
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=400, detail="User account is not available")
+    user.hashed_password = hash_password(payload.new_password)
+    consume_challenge(challenge)
+    revoke_all_refresh_tokens(db, user.id)
+    db.commit()
+    _clear_refresh_cookie(response)
+    return schemas.MessageResponse(message="Password has been reset successfully")
     token_hash = _hash_reset_token(payload.token)
     record = (
         db.query(models.PasswordResetToken)

@@ -258,7 +258,7 @@ class TestSchemaCoverageEdges:
         with pytest.raises(ValidationError):
             schemas.PartnerRegisterRequest(**partner_payload(password="alllowercase"))
         with pytest.raises(ValidationError):
-            schemas.ResetPasswordRequest(token="token", new_password="weakpassxx")
+            schemas.ResetPasswordRequest(reset_token="token", new_password="weakpassxx")
         with pytest.raises(ValidationError):
             schemas.ChangePasswordRequest(current_password="old", new_password="weakpassxx")
 
@@ -351,24 +351,49 @@ class TestAuthCoverageEdges:
         assert updated.avatar_url == "https://example.com/avatar.png"
 
     def test_reset_password_rejects_inactive_user_record(self, db_session):
+        from jose import jwt as jose_jwt
+        from database import settings as db_settings
+
         user = make_user(
             db_session,
             email="inactive-reset@example.com",
             is_active=False,
         )
-        token = "reset-token-edge"
-        db_session.add(
-            models.PasswordResetToken(
-                user_id=user.id,
-                token_hash=auth._hash_reset_token(token),
-                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
-            )
+        # Create a verified OTP challenge for this user
+        challenge = models.OtpChallenge(
+            id="inactive-reset-challenge",
+            user_id=user.id,
+            flow=schemas.OtpFlow.PASSWORD_RESET.value,
+            channel=schemas.OtpChannel.EMAIL.value,
+            recipient=user.email,
+            otp_hash="dummy",
+            attempts=0,
+            max_attempts=5,
+            resend_count=0,
+            max_resends=3,
+            resend_available_at=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            verified_at=datetime.now(timezone.utc),
         )
+        db_session.add(challenge)
         db_session.commit()
+
+        # Create a valid JWT reset token
+        reset_token = jose_jwt.encode(
+            {
+                "sub": str(user.id),
+                "challenge_id": challenge.id,
+                "token_type": "password_reset_session",
+                "exp": datetime.now(timezone.utc) + timedelta(minutes=15),
+            },
+            db_settings.secret_key,
+            algorithm="HS256",
+        )
 
         with pytest.raises(HTTPException, match="User account is not available"):
             auth.reset_password(
-                schemas.ResetPasswordRequest(token=token, new_password="NewStrong123"),
+                schemas.ResetPasswordRequest(reset_token=reset_token, new_password="NewStrong123"),
+                response=Response(),
                 db=db_session,
             )
 

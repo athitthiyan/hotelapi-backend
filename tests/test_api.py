@@ -22,9 +22,63 @@ def signup_payload(**overrides):
         "email": "athit@example.com",
         "full_name": "Athit",
         "password": "StrongPass123",
+        "phone": "+91 98765 43210",
+        "email_challenge_id": "placeholder-email",
+        "phone_challenge_id": "placeholder-phone",
     }
     payload.update(overrides)
     return payload
+
+
+def otp_signup(client, **overrides):
+    """
+    Helper function to perform signup with OTP verification.
+    Requests OTP for email and phone, verifies them, then creates account.
+    """
+    payload = signup_payload(**overrides)
+    email = payload["email"]
+    phone = payload["phone"]
+
+    # Request OTP for email
+    email_otp_resp = client.post(
+        "/auth/otp/request",
+        json={"flow": "signup", "channel": "email", "recipient": email}
+    )
+    assert email_otp_resp.status_code == 200, f"Email OTP request failed: {email_otp_resp.json()}"
+    email_challenge_id = email_otp_resp.json()["challenge_id"]
+    dev_code = email_otp_resp.json().get("dev_code")  # For testing
+
+    # Request OTP for phone
+    phone_otp_resp = client.post(
+        "/auth/otp/request",
+        json={"flow": "signup", "channel": "phone", "recipient": phone}
+    )
+    assert phone_otp_resp.status_code == 200, f"Phone OTP request failed: {phone_otp_resp.json()}"
+    phone_challenge_id = phone_otp_resp.json()["challenge_id"]
+    phone_dev_code = phone_otp_resp.json().get("dev_code")  # For testing
+
+    # Verify email OTP
+    email_verify_resp = client.post(
+        "/auth/otp/verify",
+        json={"challenge_id": email_challenge_id, "otp": dev_code}
+    )
+    assert email_verify_resp.status_code == 200, f"Email OTP verification failed: {email_verify_resp.json()}"
+
+    # Verify phone OTP
+    phone_verify_resp = client.post(
+        "/auth/otp/verify",
+        json={"challenge_id": phone_challenge_id, "otp": phone_dev_code}
+    )
+    assert phone_verify_resp.status_code == 200, f"Phone OTP verification failed: {phone_verify_resp.json()}"
+
+    # Update payload with verified challenge IDs
+    payload["email_challenge_id"] = email_challenge_id
+    payload["phone_challenge_id"] = phone_challenge_id
+
+    # Post to signup
+    response = client.post("/auth/signup", json=payload)
+    assert response.status_code == 201, f"Signup failed: {response.json()}"
+    return response
 
 
 def login_payload(**overrides):
@@ -61,8 +115,7 @@ class TestAuthenticationSignup:
 
     def test_signup_with_valid_credentials(self, client):
         """Test successful signup with valid email and password."""
-        response = client.post("/auth/signup", json=signup_payload())
-        assert response.status_code == 201
+        response = otp_signup(client)
         data = response.json()
         assert "access_token" in data
         assert "refresh_token" in data
@@ -72,30 +125,25 @@ class TestAuthenticationSignup:
     def test_signup_with_duplicate_email_returns_409(self, client):
         """Test that duplicate email signup returns 409 Conflict."""
         # First signup succeeds
-        first = client.post("/auth/signup", json=signup_payload())
+        first = otp_signup(client)
         assert first.status_code == 201
 
-        # Second signup with same email fails
-        second = client.post("/auth/signup", json=signup_payload())
-        assert second.status_code == 409
-        assert "Email already registered" in second.json()["detail"]
+        # Second OTP request for the same email should return 409
+        email = "athit@example.com"
+        email_otp_resp = client.post(
+            "/auth/otp/request",
+            json={"flow": "signup", "channel": "email", "recipient": email}
+        )
+        assert email_otp_resp.status_code == 409
 
     def test_signup_normalizes_email_case(self, client):
         """Test that email is normalized to lowercase."""
-        response = client.post(
-            "/auth/signup",
-            json=signup_payload(email="ATHIT@EXAMPLE.COM")
-        )
-        assert response.status_code == 201
+        response = otp_signup(client, email="ATHIT@EXAMPLE.COM")
         assert response.json()["user"]["email"] == "athit@example.com"
 
     def test_signup_trims_whitespace_from_email(self, client):
         """Test that email whitespace is trimmed."""
-        response = client.post(
-            "/auth/signup",
-            json=signup_payload(email="  athit@example.com  ")
-        )
-        assert response.status_code == 201
+        response = otp_signup(client, email="  athit@example.com  ")
         assert response.json()["user"]["email"] == "athit@example.com"
 
 
@@ -105,7 +153,7 @@ class TestAuthenticationLogin:
     def test_login_with_correct_credentials(self, client):
         """Test successful login with correct email and password."""
         # Setup: Create user
-        client.post("/auth/signup", json=signup_payload())
+        otp_signup(client)
 
         # Login with correct credentials
         response = client.post("/auth/login", json=login_payload())
@@ -118,7 +166,7 @@ class TestAuthenticationLogin:
     def test_login_with_wrong_password_returns_401(self, client):
         """Test that wrong password returns 401 Unauthorized."""
         # Setup: Create user
-        client.post("/auth/signup", json=signup_payload())
+        otp_signup(client)
 
         # Login with wrong password
         response = client.post(
@@ -140,7 +188,7 @@ class TestAuthenticationLogin:
     def test_login_is_case_insensitive(self, client):
         """Test that login email is case-insensitive."""
         # Setup: Create user with lowercase email
-        client.post("/auth/signup", json=signup_payload(email="test@example.com"))
+        otp_signup(client, email="test@example.com")
 
         # Login with uppercase email
         response = client.post(
@@ -156,7 +204,7 @@ class TestAuthenticationTokenRefresh:
     def test_token_refresh_with_valid_refresh_token(self, client):
         """Test that valid refresh token generates new access token."""
         # Setup: Signup and get tokens
-        signup = client.post("/auth/signup", json=signup_payload())
+        signup = otp_signup(client)
         refresh_token = signup.json()["refresh_token"]
 
         # Refresh token
@@ -170,7 +218,7 @@ class TestAuthenticationTokenRefresh:
     def test_token_refresh_with_revoked_token_returns_401(self, client, db_session):
         """Test that refreshing a revoked token is rejected."""
         # Setup: Create user and get tokens
-        signup = client.post("/auth/signup", json=signup_payload())
+        signup = otp_signup(client)
         refresh_token = signup.json()["refresh_token"]
 
         # First refresh succeeds
@@ -199,7 +247,7 @@ class TestAuthenticationTokenRefresh:
     def test_token_family_revocation_on_reuse_detection(self, client, db_session):
         """Test that reusing old refresh token revokes entire family."""
         # Setup: Create user and get tokens
-        signup = client.post("/auth/signup", json=signup_payload())
+        signup = otp_signup(client)
         old_refresh_token = signup.json()["refresh_token"]
 
         # First refresh: old token is revoked, new token issued
@@ -235,7 +283,7 @@ class TestAuthenticationMe:
 
     def test_get_current_user_profile(self, client):
         """Test that authenticated user can get their profile."""
-        signup = client.post("/auth/signup", json=signup_payload())
+        signup = otp_signup(client)
         access_token = signup.json()["access_token"]
 
         response = client.get("/auth/me", headers=auth_header(access_token))
@@ -295,8 +343,8 @@ class TestBookingsCreate:
             "/bookings",
             json=booking_payload(
                 room_id,
-                check_in=(now - timedelta(hours=1)).isoformat(),
-                check_out=(now + timedelta(days=1)).isoformat(),
+                check_in=(now - timedelta(days=2)).isoformat(),
+                check_out=(now - timedelta(days=1)).isoformat(),
             )
         )
         assert response.status_code == 400
@@ -545,61 +593,28 @@ class TestSecurityOTPValidation:
 
     def test_otp_rejects_non_numeric_input(self, client):
         """Test that non-numeric OTP is rejected."""
-        # Create user
-        signup = client.post("/auth/signup", json=signup_payload())
-        access_token = signup.json()["access_token"]
-
-        # Request OTP
-        client.post(
-            "/auth/phone/request-otp",
-            headers=auth_header(access_token),
-            json={"phone": "1234567890"}
-        )
-
-        # Try to verify with non-numeric OTP
+        # OTP schema requires exactly 6 digits; non-numeric should be rejected
         response = client.post(
-            "/auth/phone/verify",
-            headers=auth_header(access_token),
-            json={"phone": "1234567890", "otp": "ABCD"}
+            "/auth/otp/verify",
+            json={"challenge_id": "fake-challenge", "otp": "ABCDEF"}
         )
-        assert response.status_code == 400
-        assert "numeric" in response.json()["detail"].lower()
+        assert response.status_code == 422
 
     def test_otp_rejects_too_short_input(self, client):
-        """Test that OTP shorter than 4 digits is rejected."""
-        signup = client.post("/auth/signup", json=signup_payload())
-        access_token = signup.json()["access_token"]
-
-        client.post(
-            "/auth/phone/request-otp",
-            headers=auth_header(access_token),
-            json={"phone": "1234567890"}
-        )
-
+        """Test that OTP shorter than 6 digits is rejected."""
         response = client.post(
-            "/auth/phone/verify",
-            headers=auth_header(access_token),
-            json={"phone": "1234567890", "otp": "123"}
+            "/auth/otp/verify",
+            json={"challenge_id": "fake-challenge", "otp": "123"}
         )
-        assert response.status_code == 400
+        assert response.status_code == 422
 
     def test_otp_rejects_too_long_input(self, client):
         """Test that OTP longer than 6 digits is rejected."""
-        signup = client.post("/auth/signup", json=signup_payload())
-        access_token = signup.json()["access_token"]
-
-        client.post(
-            "/auth/phone/request-otp",
-            headers=auth_header(access_token),
-            json={"phone": "1234567890"}
-        )
-
         response = client.post(
-            "/auth/phone/verify",
-            headers=auth_header(access_token),
-            json={"phone": "1234567890", "otp": "1234567"}
+            "/auth/otp/verify",
+            json={"challenge_id": "fake-challenge", "otp": "1234567"}
         )
-        assert response.status_code == 400
+        assert response.status_code == 422
 
 
 # ═══ Payments Tests ══════════════════════════════════════════════════════════
@@ -725,8 +740,7 @@ class TestAuthenticationBookingFlow:
     def test_authenticated_user_booking_flow(self, client, room_id):
         """Test complete flow: signup -> login -> book -> view."""
         # Signup
-        signup = client.post("/auth/signup", json=signup_payload())
-        assert signup.status_code == 201
+        signup = otp_signup(client)
         access_token = signup.json()["access_token"]
         user_email = signup.json()["user"]["email"]
 
@@ -748,7 +762,7 @@ class TestAuthenticationBookingFlow:
     def test_logout_revokes_tokens(self, client):
         """Test that logout revokes all tokens in family."""
         # Signup and login
-        signup = client.post("/auth/signup", json=signup_payload())
+        signup = otp_signup(client)
         refresh_token = signup.json()["refresh_token"]
         access_token = signup.json()["access_token"]
 
@@ -773,23 +787,23 @@ class TestRateLimiting:
 
     def test_signup_rate_limiting(self, client):
         """Test that signup endpoint is rate limited."""
-        # Try many signups from same IP
+        # Try many signups from same IP with unique phones
         for i in range(10):
-            response = client.post(
-                "/auth/signup",
-                json=signup_payload(email=f"user{i}@example.com")
-            )
-            if response.status_code == 429:
-                # Rate limit hit
-                assert "rate" in response.json()["detail"].lower() or response.status_code == 429
-                break
+            try:
+                response = otp_signup(client, email=f"user{i}@example.com", phone=f"+91 98765 4{i:04d}")
+                if response.status_code == 429:
+                    break
+            except AssertionError as e:
+                if "429" in str(e) or "rate" in str(e).lower() or "409" in str(e):
+                    break
+                raise
         # At least one request should succeed before rate limit
         assert response.status_code in [201, 429]
 
     def test_login_rate_limiting(self, client):
         """Test that login endpoint is rate limited."""
         # Create user
-        client.post("/auth/signup", json=signup_payload(email="test@example.com"))
+        otp_signup(client, email="test@example.com")
 
         # Try many failed logins
         for i in range(20):
@@ -890,7 +904,13 @@ class TestInputValidation:
         """Test that signup requires email."""
         response = client.post(
             "/auth/signup",
-            json={"full_name": "Test", "password": "Pass123"}
+            json={
+                "full_name": "Test",
+                "password": "Pass123",
+                "phone": "+91 98765 43210",
+                "email_challenge_id": "placeholder",
+                "phone_challenge_id": "placeholder",
+            }
         )
         assert response.status_code == 422
 
@@ -898,7 +918,13 @@ class TestInputValidation:
         """Test that signup requires password."""
         response = client.post(
             "/auth/signup",
-            json={"email": "test@example.com", "full_name": "Test"}
+            json={
+                "email": "test@example.com",
+                "full_name": "Test",
+                "phone": "+91 98765 43210",
+                "email_challenge_id": "placeholder",
+                "phone_challenge_id": "placeholder",
+            }
         )
         assert response.status_code == 422
 

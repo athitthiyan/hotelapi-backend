@@ -37,7 +37,7 @@ def test_production_runtime_configuration_requires_strong_secret(monkeypatch):
         database.validate_runtime_configuration(database.settings)
         assert False, "Expected production config validation to fail"
     except RuntimeError as exc:
-        assert "Production SECRET_KEY must be set" in str(exc)
+        assert "Production SECRET_KEY must be at least 64 characters long" in str(exc)
 
 
 def test_settings_env_file_prefers_explicit_override(monkeypatch, tmp_path):

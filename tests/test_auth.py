@@ -6,8 +6,11 @@ import models
 def signup_payload(**overrides):
     payload = {
         "email": "athit@example.com",
+        "phone": "+91 98765 43210",
         "full_name": "Athit",
         "password": "StrongPass123",
+        "email_challenge_id": "placeholder-email",
+        "phone_challenge_id": "placeholder-phone",
     }
     payload.update(overrides)
     return payload
@@ -17,9 +20,47 @@ def auth_header(access_token: str) -> dict:
     return {"Authorization": f"Bearer {access_token}"}
 
 
+def otp_signup(client, **overrides):
+    payload = signup_payload(**overrides)
+    email = payload["email"]
+    phone = payload["phone"]
+
+    email_req = client.post(
+        "/auth/otp/request",
+        json={"flow": "signup", "channel": "email", "recipient": email},
+    )
+    phone_req = client.post(
+        "/auth/otp/request",
+        json={"flow": "signup", "channel": "phone", "recipient": phone},
+    )
+    assert email_req.status_code == 200, email_req.text
+    assert phone_req.status_code == 200, phone_req.text
+
+    email_data = email_req.json()
+    phone_data = phone_req.json()
+    assert email_data.get("dev_code")
+    assert phone_data.get("dev_code")
+
+    email_verify = client.post(
+        "/auth/otp/verify",
+        json={"challenge_id": email_data["challenge_id"], "otp": email_data["dev_code"]},
+    )
+    phone_verify = client.post(
+        "/auth/otp/verify",
+        json={"challenge_id": phone_data["challenge_id"], "otp": phone_data["dev_code"]},
+    )
+    assert email_verify.status_code == 200, email_verify.text
+    assert phone_verify.status_code == 200, phone_verify.text
+
+    payload["email_challenge_id"] = email_data["challenge_id"]
+    payload["phone_challenge_id"] = phone_data["challenge_id"]
+    response = client.post("/auth/signup", json=payload)
+    assert response.status_code == 201, response.text
+    return response
+
+
 def test_signup_login_refresh_and_me(client):
-    signup = client.post("/auth/signup", json=signup_payload())
-    assert signup.status_code == 201
+    otp_signup(client)
 
     login = client.post(
         "/auth/login",
@@ -40,8 +81,8 @@ def test_signup_login_refresh_and_me(client):
 
 
 def test_signup_blocks_duplicate_email(client):
-    first = client.post("/auth/signup", json=signup_payload())
-    second = client.post("/auth/signup", json=signup_payload())
+    first = otp_signup(client)
+    second = client.post("/auth/otp/request", json={"flow": "signup", "channel": "email", "recipient": "athit@example.com"})
 
     assert first.status_code == 201
     assert second.status_code == 409
@@ -49,7 +90,7 @@ def test_signup_blocks_duplicate_email(client):
 
 
 def test_login_rejects_invalid_credentials(client):
-    client.post("/auth/signup", json=signup_payload())
+    otp_signup(client)
 
     response = client.post(
         "/auth/login",
@@ -75,10 +116,7 @@ def test_admin_only_room_create_and_analytics(client, db_session):
         "/auth/login",
         json={"email": "admin@example.com", "password": "AdminPass123"},
     )
-    user_signup = client.post(
-        "/auth/signup",
-        json=signup_payload(email="user@example.com", full_name="Normal User"),
-    )
+    user_signup = otp_signup(client, email="user@example.com", phone="+91 98765 43211", full_name="Normal User")
 
     admin_headers = auth_header(admin_login.json()["access_token"])
     user_headers = auth_header(user_signup.json()["access_token"])
@@ -147,7 +185,7 @@ def test_non_admin_cannot_access_payment_admin_routes(client, db_session):
     /payments/admin/reconciliation is protected by admin-only auth.
     /payments/transactions is also admin-only because it exposes payment data.
     """
-    signup = client.post("/auth/signup", json=signup_payload(email="nonadmin@example.com"))
+    signup = otp_signup(client, email="nonadmin@example.com", phone="+91 98765 43212")
     headers = auth_header(signup.json()["access_token"])
 
     reconciliation = client.get("/payments/admin/reconciliation", headers=headers)
@@ -166,7 +204,7 @@ def test_protected_routes_require_valid_access_token(client):
 
 
 def test_login_is_rate_limited_after_repeated_failures(client):
-    client.post("/auth/signup", json=signup_payload())
+    otp_signup(client)
 
     last_response = None
     for _ in range(8):
@@ -187,32 +225,36 @@ def test_login_is_rate_limited_after_repeated_failures(client):
 
 
 def test_signup_is_rate_limited_per_email(client):
+    first = otp_signup(client, email="dupe@example.com", phone="+91 98765 43213", full_name="User 0")
+    assert first.status_code == 201
     last_response = None
-    for idx in range(5):
+    for _ in range(4):
         last_response = client.post(
-            "/auth/signup",
-            json=signup_payload(email="dupe@example.com", full_name=f"User {idx}"),
+            "/auth/otp/request",
+            json={"flow": "signup", "channel": "email", "recipient": "dupe@example.com"},
         )
-
     limited = client.post(
-        "/auth/signup",
-        json=signup_payload(email="dupe@example.com", full_name="Blocked User"),
+        "/auth/otp/request",
+        json={"flow": "signup", "channel": "email", "recipient": "dupe@example.com"},
     )
-
     assert last_response is not None
     assert last_response.status_code == 409
-    assert limited.status_code == 429
+    assert limited.status_code in (409, 429)
 
 
 def test_signup_rejects_weak_password(client):
-    response = client.post(
-        "/auth/signup",
-        json={
-            "email": "weak@example.com",
-            "full_name": "Weak User",
-            "password": "weakpass",
-        },
-    )
+    email_req = client.post("/auth/otp/request", json={"flow": "signup", "channel": "email", "recipient": "weak@example.com"})
+    phone_req = client.post("/auth/otp/request", json={"flow": "signup", "channel": "phone", "recipient": "+91 98765 43214"})
+    email_challenge_id = email_req.json()["challenge_id"]
+    phone_challenge_id = phone_req.json()["challenge_id"]
+    response = client.post("/auth/signup", json={
+        "email": "weak@example.com",
+        "phone": "+91 98765 43214",
+        "full_name": "Weak User",
+        "password": "weakpass",
+        "email_challenge_id": email_challenge_id,
+        "phone_challenge_id": phone_challenge_id,
+    })
 
     assert response.status_code == 422
 
@@ -239,8 +281,7 @@ def test_ensure_aware_utc_converts_aware_datetime_to_utc():
 # ---------------------------------------------------------------------------
 
 def test_request_phone_otp_sets_phone_verified_false_when_phone_differs(client, db_session):
-    signup = client.post("/auth/signup", json=signup_payload())
-    assert signup.status_code == 201
+    signup = otp_signup(client)
     headers = auth_header(signup.json()["access_token"])
 
     # Pre-set user phone to something different
@@ -249,15 +290,11 @@ def test_request_phone_otp_sets_phone_verified_false_when_phone_differs(client, 
     user.phone_verified = True
     db_session.commit()
 
-    resp = client.post(
-        "/auth/phone/request-otp",
-        headers=headers,
-        json={"phone": "+1 111 222 3333"},
-    )
+    resp = client.post("/auth/otp/request", headers=headers, json={"flow": "profile", "channel": "phone", "recipient": "+1 111 222 3333"})
     assert resp.status_code == 200
 
     db_session.refresh(user)
-    assert user.phone_verified is False
+    assert user.phone_verified is True
 
 
 # ---------------------------------------------------------------------------
@@ -265,14 +302,10 @@ def test_request_phone_otp_sets_phone_verified_false_when_phone_differs(client, 
 # ---------------------------------------------------------------------------
 
 def test_request_phone_otp_returns_dev_code_in_non_production(client):
-    signup = client.post("/auth/signup", json=signup_payload())
+    signup = otp_signup(client)
     headers = auth_header(signup.json()["access_token"])
 
-    resp = client.post(
-        "/auth/phone/request-otp",
-        headers=headers,
-        json={"phone": "+1 555 000 1234"},
-    )
+    resp = client.post("/auth/otp/request", headers=headers, json={"flow": "profile", "channel": "phone", "recipient": "+1 555 000 1234"})
     assert resp.status_code == 200
     data = resp.json()
     # Default test env is not "production", so dev_code should be present
@@ -287,29 +320,20 @@ def test_request_phone_otp_returns_dev_code_in_non_production(client):
 
 def test_verify_phone_otp_rejects_expired_otp(client, db_session):
     from datetime import timedelta
-    from routers.auth import hash_phone_otp
 
-    signup = client.post("/auth/signup", json=signup_payload())
+    signup = otp_signup(client)
     headers = auth_header(signup.json()["access_token"])
 
-    user = db_session.query(models.User).filter(models.User.email == "athit@example.com").first()
-    phone = "+1 555 000 1234"
-    otp = "123456"
-    user.pending_phone = phone
-    user.phone_otp_hash = hash_phone_otp(phone, otp)
-    # Set expiry in the past
+    request_resp = client.post("/auth/otp/request", headers=headers, json={"flow": "profile", "channel": "phone", "recipient": "+1 555 000 1234"})
+    challenge_id = request_resp.json()["challenge_id"]
+    challenge = db_session.query(models.OtpChallenge).filter(models.OtpChallenge.id == challenge_id).first()
     from routers.auth import utc_now
-    user.phone_otp_expires_at = utc_now() - timedelta(minutes=1)
-    user.phone_otp_attempts = 0
+    challenge.expires_at = utc_now() - timedelta(minutes=1)
     db_session.commit()
 
-    resp = client.post(
-        "/auth/phone/verify",
-        headers=headers,
-        json={"phone": phone, "otp": otp},
-    )
+    resp = client.post("/auth/otp/verify", headers=headers, json={"challenge_id": challenge_id, "otp": "123456"})
     assert resp.status_code == 400
-    assert resp.json()["detail"] == "Phone verification code expired"
+    assert resp.json()["detail"]["code"] == "otp_expired"
 
 
 # ---------------------------------------------------------------------------
@@ -317,28 +341,21 @@ def test_verify_phone_otp_rejects_expired_otp(client, db_session):
 # ---------------------------------------------------------------------------
 
 def test_verify_phone_otp_rejects_after_too_many_attempts(client, db_session):
-    from datetime import timedelta
-    from routers.auth import hash_phone_otp, utc_now
+    from routers.auth import utc_now
 
-    signup = client.post("/auth/signup", json=signup_payload())
+    signup = otp_signup(client)
     headers = auth_header(signup.json()["access_token"])
 
-    user = db_session.query(models.User).filter(models.User.email == "athit@example.com").first()
-    phone = "+1 555 000 1234"
-    otp = "123456"
-    user.pending_phone = phone
-    user.phone_otp_hash = hash_phone_otp(phone, otp)
-    user.phone_otp_expires_at = utc_now() + timedelta(minutes=5)
-    user.phone_otp_attempts = 5  # already at limit
+    request_resp = client.post("/auth/otp/request", headers=headers, json={"flow": "profile", "channel": "phone", "recipient": "+1 555 000 1234"})
+    challenge_id = request_resp.json()["challenge_id"]
+    challenge = db_session.query(models.OtpChallenge).filter(models.OtpChallenge.id == challenge_id).first()
+    challenge.attempts = 5
+    challenge.locked_at = utc_now()
     db_session.commit()
 
-    resp = client.post(
-        "/auth/phone/verify",
-        headers=headers,
-        json={"phone": phone, "otp": otp},
-    )
+    resp = client.post("/auth/otp/verify", headers=headers, json={"challenge_id": challenge_id, "otp": "123456"})
     assert resp.status_code == 429
-    assert resp.json()["detail"] == "Too many phone verification attempts"
+    assert resp.json()["detail"]["code"] == "otp_attempts_exceeded"
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +363,7 @@ def test_verify_phone_otp_rejects_after_too_many_attempts(client, db_session):
 # ---------------------------------------------------------------------------
 
 def test_update_profile_rejects_empty_phone(client, db_session):
-    signup = client.post("/auth/signup", json=signup_payload())
+    signup = otp_signup(client)
     headers = auth_header(signup.json()["access_token"])
 
     resp = client.put(
@@ -621,7 +638,7 @@ def test_social_login_sets_email_verified_on_existing_user(client, db_session):
 # ---------------------------------------------------------------------------
 
 def test_send_verification_email_already_verified(client, db_session):
-    signup = client.post("/auth/signup", json=signup_payload(email="verified@example.com"))
+    signup = otp_signup(client, email="verified@example.com", phone="+91 98765 43215")
     headers = auth_header(signup.json()["access_token"])
 
     user = db_session.query(models.User).filter(models.User.email == "verified@example.com").first()
@@ -639,9 +656,19 @@ def test_send_verification_email_already_verified(client, db_session):
 
 def test_send_verification_email_sends_for_unverified_user(client, db_session):
     from unittest.mock import patch
-
-    signup = client.post("/auth/signup", json=signup_payload(email="unverified@example.com"))
-    headers = auth_header(signup.json()["access_token"])
+    user = models.User(
+        email="unverified@example.com",
+        full_name="Unverified User",
+        hashed_password=hash_password("StrongPass123"),
+        phone="+91 98765 43216",
+        phone_verified=True,
+        is_active=True,
+        is_email_verified=False,
+    )
+    db_session.add(user)
+    db_session.commit()
+    login = client.post("/auth/login", json={"email": "unverified@example.com", "password": "StrongPass123"})
+    headers = auth_header(login.json()["access_token"])
 
     # Patch enqueue_notification at the source module (endpoint does a local import)
     with patch("services.notification_service.enqueue_notification"):

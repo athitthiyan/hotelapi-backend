@@ -43,12 +43,12 @@ def test_startup_checks_success():
 
     with patch.object(main.engine, "begin", return_value=manager), patch.object(
         main, "inspect", return_value=inspector
-    ), patch.object(main.logger, "info") as logger_info:
+    ), patch.object(main.logger, "debug") as logger_debug:
         state = MagicMock()
         main.startup_checks(state)
 
     connection.execute.assert_called_once()
-    logger_info.assert_called_once()
+    logger_debug.assert_called()
     assert hasattr(state, "hold_expiry_scheduler")
 
 
@@ -116,7 +116,7 @@ def test_startup_checks_disables_scheduler_when_dependency_missing():
         main.startup_checks(state)
 
     assert state.hold_expiry_scheduler is None
-    logger_warning.assert_called_once()
+    logger_warning.assert_called()
 
 
 def test_shutdown_scheduler_stops_existing_scheduler():

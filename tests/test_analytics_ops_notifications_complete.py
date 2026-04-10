@@ -19,6 +19,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 import models
 from routers.auth import hash_password
+from services.rate_limit_service import reset_rate_limits
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
@@ -44,6 +45,47 @@ def make_admin(db_session, email="admin@analytics.com"):
 def admin_token(client, email="admin@analytics.com") -> dict:
     r = client.post("/auth/login", json={"email": email, "password": "AdminPass123"})
     return auth_header(r.json()["access_token"])
+
+
+def otp_signup(client, email: str, full_name: str, password: str, phone: str):
+    """Helper to signup a user via OTP flow."""
+    reset_rate_limits()
+
+    # Request OTP for email
+    r_email = client.post("/auth/otp/request", json={"flow": "signup", "channel": "email", "recipient": email})
+    assert r_email.status_code == 200, r_email.text
+    email_data = r_email.json()
+
+    # Verify email OTP
+    r_email_verify = client.post("/auth/otp/verify", json={
+        "challenge_id": email_data["challenge_id"],
+        "otp": email_data["dev_code"],
+    })
+    assert r_email_verify.status_code == 200, r_email_verify.text
+
+    # Request OTP for phone
+    r_phone = client.post("/auth/otp/request", json={"flow": "signup", "channel": "phone", "recipient": phone})
+    assert r_phone.status_code == 200, r_phone.text
+    phone_data = r_phone.json()
+
+    # Verify phone OTP
+    r_phone_verify = client.post("/auth/otp/verify", json={
+        "challenge_id": phone_data["challenge_id"],
+        "otp": phone_data["dev_code"],
+    })
+    assert r_phone_verify.status_code == 200, r_phone_verify.text
+
+    # Signup with OTP-verified challenge IDs
+    r_signup = client.post("/auth/signup", json={
+        "email": email,
+        "full_name": full_name,
+        "password": password,
+        "phone": phone,
+        "email_challenge_id": email_data["challenge_id"],
+        "phone_challenge_id": phone_data["challenge_id"],
+    })
+    assert r_signup.status_code == 201, r_signup.text
+    return r_signup.json()
 
 
 def utc_now() -> datetime:
@@ -256,12 +298,8 @@ class TestAnalyticsGetAnalytics:
             assert "date" in ds
 
     def test_non_admin_cannot_access_analytics(self, client):
-        signup = client.post("/auth/signup", json={
-            "email": "noadmin@analytics.com",
-            "full_name": "NoAdmin",
-            "password": "UserPass123",
-        })
-        headers = auth_header(signup.json()["access_token"])
+        signup = otp_signup(client, "noadmin@analytics.com", "NoAdmin", "UserPass123", "9999900001")
+        headers = auth_header(signup["access_token"])
         r = client.get("/analytics", headers=headers, params={"days": 7})
         assert r.status_code == 403
 
@@ -394,12 +432,8 @@ class TestRunMaintenance:
         assert "expired_payments" in body or "notifications_processed" in body or True
 
     def test_non_admin_cannot_run_maintenance(self, client):
-        signup = client.post("/auth/signup", json={
-            "email": "user@ops.com",
-            "full_name": "User",
-            "password": "UserPass123",
-        })
-        headers = auth_header(signup.json()["access_token"])
+        signup = otp_signup(client, "user@ops.com", "User", "UserPass123", "9999900002")
+        headers = auth_header(signup["access_token"])
         r = client.post("/ops/run-maintenance", headers=headers)
         assert r.status_code == 403
 
@@ -435,12 +469,8 @@ class TestGetAuditLogs:
         assert r.json()["total"] == 0
 
     def test_non_admin_cannot_access_audit_logs(self, client):
-        signup = client.post("/auth/signup", json={
-            "email": "nonadmin@ops.com",
-            "full_name": "NonAdmin",
-            "password": "UserPass123",
-        })
-        headers = auth_header(signup.json()["access_token"])
+        signup = otp_signup(client, "nonadmin@ops.com", "NonAdmin", "UserPass123", "9999900003")
+        headers = auth_header(signup["access_token"])
         r = client.get("/ops/audit-logs", headers=headers)
         assert r.status_code == 403
 
@@ -500,12 +530,8 @@ class TestNotificationOutbox:
             assert notif["status"] == "SENT"
 
     def test_non_admin_cannot_access_outbox(self, client):
-        signup = client.post("/auth/signup", json={
-            "email": "nonadmin@notif.com",
-            "full_name": "NonAdmin",
-            "password": "UserPass123",
-        })
-        headers = auth_header(signup.json()["access_token"])
+        signup = otp_signup(client, "nonadmin@notif.com", "NonAdmin", "UserPass123", "9999900004")
+        headers = auth_header(signup["access_token"])
         r = client.get("/notifications/outbox", headers=headers)
         assert r.status_code == 403
 
@@ -526,11 +552,7 @@ class TestProcessOutbox:
         assert r.status_code == 200
 
     def test_non_admin_cannot_process(self, client):
-        signup = client.post("/auth/signup", json={
-            "email": "nonadmin2@notif.com",
-            "full_name": "NonAdmin2",
-            "password": "UserPass123",
-        })
-        headers = auth_header(signup.json()["access_token"])
+        signup = otp_signup(client, "nonadmin2@notif.com", "NonAdmin2", "UserPass123", "9999900005")
+        headers = auth_header(signup["access_token"])
         r = client.post("/notifications/process", headers=headers)
         assert r.status_code == 403

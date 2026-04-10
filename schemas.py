@@ -1,5 +1,5 @@
 import re
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, TypeAdapter, field_validator
 from typing import Optional, List
 from datetime import date, datetime
 from enum import Enum
@@ -38,6 +38,18 @@ class PaymentStatus(str, Enum):
     PAID = "paid"
     FAILED = "failed"
     REFUNDED = "refunded"
+    EXPIRED = "expired"
+
+
+class OtpFlow(str, Enum):
+    SIGNUP = "signup"
+    PROFILE = "profile"
+    PASSWORD_RESET = "password_reset"
+
+
+class OtpChannel(str, Enum):
+    EMAIL = "email"
+    PHONE = "phone"
     EXPIRED = "expired"
 
 
@@ -447,8 +459,11 @@ class AnalyticsResponse(BaseModel):
 
 class UserSignup(BaseModel):
     email: EmailStr
+    phone: str = Field(min_length=7, max_length=30)
     full_name: str = Field(min_length=2, max_length=100)
     password: str = Field(min_length=10, max_length=128)
+    email_challenge_id: str = Field(min_length=1, max_length=64)
+    phone_challenge_id: str = Field(min_length=1, max_length=64)
 
     @field_validator("password")
     @classmethod
@@ -461,6 +476,14 @@ class UserSignup(BaseModel):
                 "Password must include uppercase, lowercase, and numeric characters"
             )
         return value
+
+    @field_validator("phone")
+    @classmethod
+    def validate_signup_phone(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not re.fullmatch(r"[0-9+\-\s()]{7,30}", cleaned):
+            raise ValueError("Phone number format is invalid")
+        return cleaned
 
 
 class UserLogin(BaseModel):
@@ -475,9 +498,11 @@ class UserResponse(BaseModel):
     phone: Optional[str] = None
     phone_verified: bool = False
     is_email_verified: bool = False
+    avatar_url: Optional[str] = None
     is_admin: bool
     is_partner: bool
     is_active: bool
+    created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -892,8 +917,11 @@ class PartnerPricingCalendarResponse(BaseModel):
 
 class UserProfileUpdate(BaseModel):
     full_name: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    email: Optional[EmailStr] = None
     phone: Optional[str] = Field(default=None, max_length=30)
     avatar_url: Optional[str] = Field(default=None, max_length=500)
+    email_challenge_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    phone_challenge_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
 
     @field_validator("phone")
     @classmethod
@@ -906,27 +934,60 @@ class UserProfileUpdate(BaseModel):
         return cleaned
 
 
-class PhoneOtpRequest(BaseModel):
-    phone: str = Field(min_length=7, max_length=30)
+class OtpChallengeStartRequest(BaseModel):
+    flow: OtpFlow
+    channel: OtpChannel
+    recipient: str = Field(min_length=3, max_length=200)
+    device_fingerprint: Optional[str] = Field(default=None, max_length=255)
 
-    @field_validator("phone")
+    @field_validator("recipient")
     @classmethod
-    def validate_phone(cls, value: str) -> str:
+    def validate_recipient(cls, value: str, info) -> str:
         cleaned = value.strip()
+        channel = info.data.get("channel")
+        if channel == OtpChannel.EMAIL:
+            TypeAdapter(EmailStr).validate_python(cleaned)
+            return cleaned.lower()
         if not re.fullmatch(r"[0-9+\-\s()]{7,30}", cleaned):
             raise ValueError("Phone number format is invalid")
         return cleaned
 
 
-class PhoneOtpVerifyRequest(PhoneOtpRequest):
-    otp: str
+class OtpChallengeVerifyRequest(BaseModel):
+    challenge_id: str = Field(min_length=1, max_length=64)
+    otp: str = Field(min_length=6, max_length=6)
+
+    @field_validator("otp")
+    @classmethod
+    def validate_exact_otp(cls, value: str) -> str:
+        if not re.fullmatch(r"[0-9]{6}", value):
+            raise ValueError("OTP must be exactly 6 digits")
+        return value
 
 
-class PhoneOtpResponse(BaseModel):
+class OtpChallengeResponse(BaseModel):
     message: str
-    phone: str
+    challenge_id: str
+    flow: OtpFlow
+    channel: OtpChannel
+    recipient: str
     expires_in_seconds: int
+    resend_available_in_seconds: int
+    resends_remaining: int
+    attempts_remaining: int
+    max_resends: int
+    max_attempts: int
     dev_code: Optional[str] = None
+    blocked_until: Optional[datetime] = None
+
+
+class OtpChallengeVerifyResponse(BaseModel):
+    message: str
+    challenge_id: str
+    flow: OtpFlow
+    channel: OtpChannel
+    recipient: str
+    reset_token: Optional[str] = None
 
 
 class UserDetailResponse(BaseModel):
@@ -935,9 +996,10 @@ class UserDetailResponse(BaseModel):
     full_name: str
     phone: Optional[str] = None
     phone_verified: bool = False
-    pending_phone: Optional[str] = None
+    is_email_verified: bool = False
     avatar_url: Optional[str] = None
     is_admin: bool
+    is_partner: bool = False
     is_active: bool
     created_at: Optional[datetime] = None
 
@@ -947,11 +1009,25 @@ class UserDetailResponse(BaseModel):
 # ─── Auth Extensions ──────────────────────────────────────────────────────────
 
 class ForgotPasswordRequest(BaseModel):
-    email: EmailStr
+    channel: OtpChannel
+    recipient: str = Field(min_length=3, max_length=200)
+    device_fingerprint: Optional[str] = Field(default=None, max_length=255)
+
+    @field_validator("recipient")
+    @classmethod
+    def validate_recovery_recipient(cls, value: str, info) -> str:
+        cleaned = value.strip()
+        channel = info.data.get("channel")
+        if channel == OtpChannel.EMAIL:
+            TypeAdapter(EmailStr).validate_python(cleaned)
+            return cleaned.lower()
+        if not re.fullmatch(r"[0-9+\-\s()]{7,30}", cleaned):
+            raise ValueError("Phone number format is invalid")
+        return cleaned
 
 
 class ResetPasswordRequest(BaseModel):
-    token: str = Field(min_length=1, max_length=256)
+    reset_token: str = Field(min_length=1, max_length=512)
     new_password: str = Field(min_length=10, max_length=128)
 
     @field_validator("new_password")
