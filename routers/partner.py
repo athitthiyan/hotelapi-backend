@@ -1,3 +1,4 @@
+import logging
 import json
 import csv
 import io
@@ -24,6 +25,7 @@ from services.inventory_service import calculate_effective_price, derive_invento
 from services.rate_limit_service import enforce_rate_limit
 
 router = APIRouter(prefix="/partner", tags=["Partner"])
+logger = logging.getLogger(__name__)
 
 DEFAULT_COMMISSION_RATE = 0.15
 
@@ -33,8 +35,8 @@ def _broadcast(event_type: str, payload: dict, source: str = "partner"):
     try:
         from main import broadcast_event
         broadcast_event(event_type, payload, source)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.exception("Failed to broadcast event %s: %s", event_type, exc)
 
 
 def _mask_account_number(account_number: str | None) -> str | None:
@@ -699,8 +701,8 @@ def reject_booking(
     try:
         from services.inventory_service import release_inventory_for_booking
         release_inventory_for_booking(db, booking=booking)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.exception("Failed to release inventory for rejected booking %d: %s", booking.id, exc)
 
     db.commit()
     db.refresh(booking)

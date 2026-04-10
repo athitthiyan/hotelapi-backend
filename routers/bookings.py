@@ -1,3 +1,4 @@
+import logging
 import random
 import string
 from datetime import datetime, timedelta, timezone
@@ -48,6 +49,7 @@ from services.document_service import (
 )
 
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
+logger = logging.getLogger(__name__)
 
 BOOKING_HOLD_MINUTES = 10
 VISIBLE_ACTIVE_HOLD_LIFECYCLE_STATES = {
@@ -64,8 +66,8 @@ def _broadcast(event_type: str, payload: dict, source: str = "system"):
     try:
         from main import broadcast_event
         broadcast_event(event_type, payload, source)
-    except Exception:
-        pass  # Non-critical: sync is best-effort
+    except Exception as exc:
+        logger.exception("Failed to broadcast event %s: %s", event_type, exc)
 
 
 def resolve_authenticated_booking_user(
@@ -78,6 +80,36 @@ def resolve_authenticated_booking_user(
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# ── Hotel business-day cutoff ────────────────────────────────────────────────
+# The hotel's operational day extends past midnight until BUSINESS_DAY_CUTOFF_HOUR
+# in the hotel's local timezone.  A guest booking for "today" remains valid until
+# that cutoff hour of the *next* calendar day.
+#
+# Example (IST, cutoff=3):
+#   Business date 2026-04-10 is valid from 2026-04-10 03:00 IST until 2026-04-11 03:00 IST.
+#   At 01:30 AM IST on 2026-04-11, booking for 2026-04-10 is still allowed.
+HOTEL_TZ = timezone(timedelta(hours=5, minutes=30))  # IST
+BUSINESS_DAY_CUTOFF_HOUR = 3  # 3:00 AM local time
+
+
+def get_business_date_start(now: datetime | None = None) -> datetime:
+    """Return the start-of-day (midnight UTC) of the current *business* date.
+
+    If local hotel time is before the cutoff hour (e.g. 3 AM), the business day
+    is still "yesterday", so we return yesterday's midnight UTC.
+    Otherwise we return today's midnight UTC.
+    """
+    if now is None:
+        now = utc_now()
+    local_now = now.astimezone(HOTEL_TZ)
+    business_date = local_now.date()
+    if local_now.hour < BUSINESS_DAY_CUTOFF_HOUR:
+        business_date = business_date - timedelta(days=1)
+    # Return midnight UTC of the business date for comparison with check_in timestamps
+    return datetime(business_date.year, business_date.month, business_date.day, tzinfo=timezone.utc)
+
 
 
 def normalize_comparison_datetime(value: datetime, reference: datetime) -> datetime:
@@ -271,7 +303,9 @@ def has_active_booking_overlap(
         models.Booking.check_out > check_in,
     )
 
-    query = db.query(models.Booking).filter(
+    query = db.query(models.Booking).options(
+        joinedload(models.Booking.room)
+    ).filter(
         models.Booking.room_id == room_id,
         overlap_filter,
         models.Booking.status.in_(
@@ -352,9 +386,12 @@ def create_booking(
             field="check_out",
         )
 
-    # Check if check-in is in the future
+    # Check if check-in date is still valid under hotel business-day rules.
+    # The hotel operational day extends until 3:00 AM local time, so same-day
+    # bookings are allowed even after midnight until that cutoff.
     now = utc_now()
-    if check_in <= now:
+    business_day_start = get_business_date_start(now)
+    if check_in < business_day_start:
         raise booking_error(
             status_code=400,
             code=error_codes.CHECK_IN_PAST,
@@ -521,11 +558,28 @@ def get_bookings(
 @router.get("/history", response_model=schemas.BookingListResponse)
 def get_booking_history(
     email: str = Query(...),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(10, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
     release_expired_holds(db)
     normalized_email = normalize_email(email)
     user = db.query(models.User).filter(models.User.email == normalized_email).first()
+
+    # Get total count
+    total = (
+        db.query(func.count(models.Booking.id))
+        .filter(
+            or_(
+                models.Booking.email == normalized_email,
+                models.Booking.user_id == (user.id if user else -1),
+            )
+        )
+        .scalar()
+        or 0
+    )
+
+    # Get paginated bookings
     bookings = (
         db.query(models.Booking)
         .options(joinedload(models.Booking.room))
@@ -536,6 +590,8 @@ def get_booking_history(
             )
         )
         .order_by(models.Booking.created_at.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
         .all()
     )
     if reconcile_bookings_payment_states(db, bookings):
@@ -544,7 +600,7 @@ def get_booking_history(
             db.refresh(booking)
     attach_bookings_lifecycle_state(db, bookings)
 
-    return {"bookings": bookings, "total": len(bookings)}
+    return {"bookings": bookings, "total": total}
 
 
 @router.get(

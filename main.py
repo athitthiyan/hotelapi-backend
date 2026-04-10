@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import sys
 from contextlib import asynccontextmanager
 from typing import Set
 
@@ -23,6 +24,31 @@ except ImportError:  # pragma: no cover - guarded for environments without optio
     BackgroundScheduler = None
 
 logger = logging.getLogger(__name__)
+
+
+def configure_logging():
+    """Configure logging with JSON format in production for ELK/CloudWatch integration."""
+    log_format = "%(asctime)s %(levelname)s %(name)s %(message)s"
+    if settings.app_env.lower() == "production":
+        # TODO: Install json-log-formatter for structured JSON logging in production
+        # For now, using standard logging format until json-log-formatter is added to requirements
+        try:
+            import json_log_formatter
+            handler = logging.StreamHandler(sys.stdout)
+            handler.setFormatter(json_log_formatter.JSONFormatter())
+            logging.root.handlers = [handler]
+        except ImportError:
+            logging.basicConfig(format=log_format, level=logging.INFO)
+            logger.warning("json-log-formatter not installed; falling back to plain text logging")
+    else:
+        logging.basicConfig(format=log_format, level=logging.WARNING)
+        # Silence noisy third-party loggers in development
+        logging.getLogger("apscheduler").setLevel(logging.WARNING)
+        logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
+        logging.getLogger("apscheduler.executors").setLevel(logging.WARNING)
+
+
+configure_logging()
 
 def run_expired_hold_release(session_factory=SessionLocal) -> int:
     db = session_factory()
@@ -67,7 +93,7 @@ def startup_checks(state) -> None:
                     ", ".join(missing_tables),
                 )
 
-        logger.info("Database connection established.")
+        logger.debug("Database connection established.")
     except (SQLAlchemyError, RuntimeError) as exc:
         logger.exception("Database initialization failed during startup: %s", exc)
 
@@ -133,18 +159,68 @@ _HARDCODED_ORIGINS = [
 ]
 _env_origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
 origins = list(set(_env_origins + _HARDCODED_ORIGINS))
-logger.info("Configured CORS origins: %s", ", ".join(sorted(origins)))
+logger.debug("Configured CORS origins: %s", ", ".join(sorted(origins)))
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
-)
+## NOTE: CORSMiddleware is registered BELOW all other middleware (after SecurityHeaders, etc.)
+## so that it wraps them and CORS headers are always present — even on error responses.
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    """Add X-Request-ID header for distributed request tracing."""
+
+    async def dispatch(self, request, call_next):
+        import uuid
+        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
+
+class RequestBodySizeLimitMiddleware(BaseHTTPMiddleware):
+    """Limit request body size to prevent memory exhaustion attacks."""
+
+    MAX_BODY_SIZE = 10 * 1024 * 1024  # 10 MB limit
+
+    async def dispatch(self, request, call_next):
+        if request.method in {"POST", "PUT", "PATCH"}:
+            content_length = request.headers.get("content-length")
+            if content_length and int(content_length) > self.MAX_BODY_SIZE:
+                return Response(
+                    content='{"detail":"Request body too large"}',
+                    status_code=413,
+                    media_type="application/json",
+                )
+        return await call_next(request)
+
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Add security headers and enforce CSRF protection via Origin/Referer validation."""
+
+    _STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
     async def dispatch(self, request, call_next):
+        # ── HTTPS Enforcement for production ──
+        if settings.app_env.lower() == "production":
+            forwarded_proto = request.headers.get("x-forwarded-proto", "")
+            if forwarded_proto == "http":
+                url = str(request.url).replace("http://", "https://", 1)
+                return Response(status_code=301, headers={"Location": url})
+
+        # ── CSRF Protection: validate Origin/Referer for state-changing requests ──
+        if request.method in self._STATE_CHANGING_METHODS:
+            origin = request.headers.get("origin") or request.headers.get("referer", "")
+            # Allow requests with no origin only from same-site (non-browser clients)
+            if origin:
+                from urllib.parse import urlparse
+                parsed = urlparse(origin)
+                origin_base = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme else origin
+                if origin_base not in origins:
+                    logger.warning("CSRF check failed: origin=%s not in allowed origins", origin_base)
+                    return Response(
+                        content='{"detail":"CSRF validation failed: origin not allowed"}',
+                        status_code=403,
+                        media_type="application/json",
+                    )
+
         response: Response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
@@ -154,7 +230,19 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestIDMiddleware)
+app.add_middleware(RequestBodySizeLimitMiddleware)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# CORSMiddleware MUST be the last middleware added (= first to run in request chain)
+# so that CORS headers are present on ALL responses, including errors from inner middleware.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
+)
 
 app.include_router(rooms.router)
 app.include_router(bookings.router)

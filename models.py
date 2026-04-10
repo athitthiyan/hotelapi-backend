@@ -187,8 +187,8 @@ class Room(Base):
     rating = Column(Float, default=4.5)
     review_count = Column(Integer, default=0)
     image_url = Column(String(500))
-    gallery_urls = Column(Text)  # JSON array of URLs
-    amenities = Column(Text)     # JSON array of amenities
+    gallery_urls = Column(JSON)  # JSON array of URLs
+    amenities = Column(JSON)     # JSON array of amenities
     location = Column(String(200))
     city = Column(String(100))
     country = Column(String(100))
@@ -289,6 +289,7 @@ class Transaction(Base):
     amount = Column(Float, nullable=False)
     currency = Column(String(10), default="INR")
     payment_method = Column(String(50))  # card, mock, upi, razorpay, gpay, phonepay
+    # PCI compliant display fields (last 4 digits and brand are NOT sensitive per PCI DSS)
     card_last4 = Column(String(4))
     card_brand = Column(String(20))
     retry_of_transaction_id = Column(Integer, ForeignKey("transactions.id"))

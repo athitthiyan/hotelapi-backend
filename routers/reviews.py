@@ -1,5 +1,6 @@
 """Reviews router — verified-stay reviews with host-reply support."""
 
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -174,15 +175,13 @@ def host_reply(
     db: Session = Depends(get_db),
 ):
     """Admin/host can reply to a review."""
-    from datetime import timezone
-
     review = db.query(models.Review).options(joinedload(models.Review.user)).filter(
         models.Review.id == review_id
     ).first()
     if not review:
         raise HTTPException(status_code=404, detail="Review not found")
     review.host_reply = payload.reply
-    review.host_replied_at = __import__("datetime").datetime.now(timezone.utc)
+    review.host_replied_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(review)
     return _review_to_response(review)

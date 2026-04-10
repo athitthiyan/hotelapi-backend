@@ -9,6 +9,7 @@ import models
 
 SEARCH_CACHE_TTL_SECONDS = 60
 
+# TODO: Migrate in-memory search cache to Redis for distributed caching and production scalability
 _search_cache: dict[str, tuple[datetime, dict[str, Any]]] = {}
 _cache_lock = Lock()
 

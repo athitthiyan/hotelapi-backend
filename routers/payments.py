@@ -1,3 +1,4 @@
+import logging
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -37,7 +38,10 @@ from services.payment_state_service import (
 )
 from services.rate_limit_service import enforce_rate_limit
 
+__all__ = ["router"]
+
 router = APIRouter(prefix="/payments", tags=["Payments"])
+logger = logging.getLogger(__name__)
 
 RECONCILIATION_TIMEOUT_MINUTES = 5
 FAILED_PAYMENT_BLOCK_WINDOW_MINUTES = 30
@@ -47,14 +51,17 @@ FAILED_PAYMENT_ESCALATED_BLOCK_THRESHOLD = 10
 FAILED_PAYMENT_ESCALATED_BLOCK_SECONDS = 15 * 60
 REFUND_SETTLEMENT_DAYS = 5
 
+# TODO: Implement circuit breaker pattern for Stripe/Razorpay API calls to gracefully degrade during gateway outages
+# Suggested implementation: use pybreaker or similar library to auto-fail fast and alert ops team
+
 
 def _broadcast(event_type: str, payload: dict, source: str = "system"):
     """Fire-and-forget WebSocket broadcast for real-time sync."""
     try:
         from main import broadcast_event
         broadcast_event(event_type, payload, source)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.exception("Failed to broadcast event %s: %s", event_type, exc)
 
 
 def _notification_exists(
@@ -555,7 +562,8 @@ def verify_card_payment_intent_succeeded(
     for attempt in range(safe_attempts):
         try:
             payment_intent = stripe.PaymentIntent.retrieve(payment_intent_id)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to retrieve payment intent %s (attempt %d): %s", payment_intent_id, attempt + 1, exc)
             payment_intent = None
 
         if payment_intent is not None:

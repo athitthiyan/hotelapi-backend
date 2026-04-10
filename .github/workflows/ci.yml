@@ -38,6 +38,9 @@ jobs:
             routers \
             services
 
+      # TODO: Add pip-audit step to check for known vulnerabilities in dependencies
+      # Example: pip install pip-audit && pip-audit
+
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest

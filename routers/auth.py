@@ -20,6 +20,8 @@ from services.audit_service import write_audit_log
 from services.payment_state_service import attach_bookings_lifecycle_state
 from services.rate_limit_service import enforce_rate_limit
 
+__all__ = ["router", "MyBookingsResponse", "utc_now", "ensure_aware_utc"]
+
 
 class MyBookingsResponse(BaseModel):
     total: int

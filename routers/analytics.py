@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import extract, func
 from sqlalchemy.orm import Session
@@ -17,7 +17,7 @@ def get_analytics(
     db: Session = Depends(get_db),
     _admin: models.User = Depends(get_current_admin),
 ):
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     start_date = now - timedelta(days=days)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -181,7 +181,7 @@ def get_revenue_stats(
     db: Session = Depends(get_db),
     _admin: models.User = Depends(get_current_admin),
 ):
-    this_month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0)
+    this_month_start = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0)
     last_month_start = (this_month_start - timedelta(days=1)).replace(day=1)
 
     this_month = db.query(

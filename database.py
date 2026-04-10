@@ -215,19 +215,30 @@ def get_settings() -> Settings:
 
 def validate_runtime_configuration(config: Settings) -> None:
     """Raise RuntimeError for insecure production configurations."""
-    if config.app_env.lower() != "production":
-        # Warn in development if using default key
-        if config.secret_key == "change-this-in-production":
-            logger.warning(
-                "Using default SECRET_KEY in development. "
-                "In production, set a strong, random key with at least 64 characters."
-            )
+    _INSECURE_DEFAULTS = {
+        "change-this-in-production",
+        "change-this-run-python-c-import-secrets-print-secrets-token-hex-32",
+        "hotel-api-super-secret-key-2026-dev-only-change-in-production",
+    }
+    is_production = config.app_env.lower() == "production"
+    is_insecure = config.secret_key in _INSECURE_DEFAULTS
+    is_too_short = len(config.secret_key) < 64
+
+    if not is_production:
+        # Silently accept insecure defaults in development
         return
-    insecure_default = config.secret_key == "change-this-in-production"
-    too_short = len(config.secret_key) < 64
-    if insecure_default or too_short:
+
+    # In production, enforce strong key requirements strictly
+    if is_insecure:
         raise RuntimeError(
-            "Production SECRET_KEY must be set and at least 64 characters long"
+            "Production SECRET_KEY is set to an insecure default. "
+            "Generate a strong key: python -c \"import secrets; print(secrets.token_hex(32))\""
+        )
+    if is_too_short:
+        raise RuntimeError(
+            f"Production SECRET_KEY must be at least 64 characters long "
+            f"(currently {len(config.secret_key)}). "
+            "Generate a strong key: python -c \"import secrets; print(secrets.token_hex(32))\""
         )
 
 
