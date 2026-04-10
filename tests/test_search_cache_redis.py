@@ -1,6 +1,6 @@
 """Tests for search cache Redis integration and in-memory fallback."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 import services.search_service as search_svc
 
 

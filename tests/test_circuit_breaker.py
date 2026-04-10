@@ -1,7 +1,6 @@
 """Tests for the circuit breaker service."""
 
 import time
-from unittest.mock import patch
 
 from services.circuit_breaker_service import (
     CircuitBreaker,
