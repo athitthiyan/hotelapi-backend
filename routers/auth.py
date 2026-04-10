@@ -789,39 +789,44 @@ def forgot_password(
         user_id=user.id,
         device_fingerprint=payload.device_fingerprint,
     )
+
+    # Also create a link-based PasswordResetToken (email channel only) so the
+    # user can alternatively click a reset link instead of entering the OTP.
+    if payload.channel == schemas.OtpChannel.EMAIL:
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = _hash_reset_token(raw_token)
+        expires_at = utc_now() + timedelta(hours=1)
+        # Invalidate previous unused tokens for this user
+        db.query(models.PasswordResetToken).filter(
+            models.PasswordResetToken.user_id == user.id,
+            models.PasswordResetToken.used_at.is_(None),
+        ).delete()
+        db.add(models.PasswordResetToken(
+            user_id=user.id,
+            token_hash=token_hash,
+            expires_at=expires_at,
+        ))
+        from services.notification_service import enqueue_notification
+        enqueue_notification(
+            db,
+            event_type="password_reset",
+            recipient_email=user.email,
+            subject="Reset your Stayvora password",
+            body=(
+                f"Hi {user.full_name},\n\n"
+                f"Click the link below to reset your password:\n\n"
+                f"https://stayvora.co.in/reset-password?token={raw_token}\n\n"
+                f"This link expires in 1 hour. If you didn't request this, "
+                f"you can safely ignore this email.\n\n"
+                f"— The Stayvora Team"
+            ),
+        )
+
     db.commit()
     return build_challenge_response(
         challenge,
         message="If the account exists, an OTP has been sent.",
         dev_code=dev_code if settings.app_env.lower() != "production" else None,
-    )
-    enforce_rate_limit("auth:forgot-password", request, subject=payload.email.lower())
-    user = db.query(models.User).filter(models.User.email == normalize_email(payload.email)).first()
-    # Always return 200 to prevent email enumeration
-    if user and user.is_active:
-        raw_token = secrets.token_urlsafe(32)
-        token_hash = _hash_reset_token(raw_token)
-        expires_at = utc_now() + timedelta(hours=1)
-        # Invalidate previous tokens for this user
-        db.query(models.PasswordResetToken).filter(
-            models.PasswordResetToken.user_id == user.id,
-            models.PasswordResetToken.used_at == None,  # noqa: E711
-        ).delete()
-        reset_token = models.PasswordResetToken(
-            user_id=user.id,
-            token_hash=token_hash,
-            expires_at=expires_at,
-        )
-        db.add(reset_token)
-        db.commit()
-        # In production: send email with reset link containing raw_token
-        # For now the raw token is returned in the response body for dev testing
-        import logging
-        logging.getLogger(__name__).info(
-            "Password reset requested for %s — token (dev only): %s", user.email, raw_token
-        )
-    return schemas.MessageResponse(
-        message="If that email exists, a reset link has been sent."
     )
 
 
@@ -831,45 +836,60 @@ def reset_password(
     response: Response,
     db: Session = Depends(get_db),
 ):
-    session_payload = decode_token(payload.reset_token, "password_reset_session")
-    challenge_id = session_payload.get("challenge_id")
-    user_id = int(session_payload.get("sub"))
-    challenge = db.query(models.OtpChallenge).filter(
-        models.OtpChallenge.id == challenge_id,
-        models.OtpChallenge.user_id == user_id,
-        models.OtpChallenge.flow == schemas.OtpFlow.PASSWORD_RESET.value,
-        models.OtpChallenge.verified_at.is_not(None),
-        models.OtpChallenge.consumed_at.is_(None),
-    ).first()
-    if not challenge:
-        raise HTTPException(status_code=400, detail="Reset session is invalid or has expired")
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-    if not user or not user.is_active:
-        raise HTTPException(status_code=400, detail="User account is not available")
-    user.hashed_password = hash_password(payload.new_password)
-    consume_challenge(challenge)
+    # The reset_token can be either:
+    #   1. A JWT issued after OTP verification (contains "challenge_id")
+    #   2. A raw URL-safe token from a password-reset email link
+    # Try the OTP-session JWT path first; fall back to the link-token path.
+    try:
+        session_payload = jwt.decode(
+            payload.reset_token, settings.secret_key, algorithms=[ALGORITHM]
+        )
+        if session_payload.get("token_type") != "password_reset_session":
+            raise JWTError("wrong token type")
+    except JWTError:
+        session_payload = None
+
+    if session_payload:
+        # ── OTP-based reset ──────────────────────────────────────────────
+        challenge_id = session_payload.get("challenge_id")
+        user_id = int(session_payload.get("sub"))
+        challenge = db.query(models.OtpChallenge).filter(
+            models.OtpChallenge.id == challenge_id,
+            models.OtpChallenge.user_id == user_id,
+            models.OtpChallenge.flow == schemas.OtpFlow.PASSWORD_RESET.value,
+            models.OtpChallenge.verified_at.is_not(None),
+            models.OtpChallenge.consumed_at.is_(None),
+        ).first()
+        if not challenge:
+            raise HTTPException(status_code=400, detail="Reset session is invalid or has expired")
+        user = db.query(models.User).filter(models.User.id == user_id).first()
+        if not user or not user.is_active:
+            raise HTTPException(status_code=400, detail="User account is not available")
+        user.hashed_password = hash_password(payload.new_password)
+        consume_challenge(challenge)
+    else:
+        # ── Link-token-based reset ───────────────────────────────────────
+        token_hash = _hash_reset_token(payload.reset_token)
+        record = (
+            db.query(models.PasswordResetToken)
+            .filter(
+                models.PasswordResetToken.token_hash == token_hash,
+                models.PasswordResetToken.used_at.is_(None),
+                models.PasswordResetToken.expires_at > utc_now(),
+            )
+            .first()
+        )
+        if not record:
+            raise HTTPException(status_code=400, detail="Reset token is invalid or has expired")
+        user = db.query(models.User).filter(models.User.id == record.user_id).first()
+        if not user or not user.is_active:
+            raise HTTPException(status_code=400, detail="User account is not available")
+        user.hashed_password = hash_password(payload.new_password)
+        record.used_at = utc_now()
+
     revoke_all_refresh_tokens(db, user.id)
     db.commit()
     _clear_refresh_cookie(response)
-    return schemas.MessageResponse(message="Password has been reset successfully")
-    token_hash = _hash_reset_token(payload.token)
-    record = (
-        db.query(models.PasswordResetToken)
-        .filter(
-            models.PasswordResetToken.token_hash == token_hash,
-            models.PasswordResetToken.used_at == None,  # noqa: E711
-            models.PasswordResetToken.expires_at > utc_now(),
-        )
-        .first()
-    )
-    if not record:
-        raise HTTPException(status_code=400, detail="Reset token is invalid or has expired")
-    user = db.query(models.User).filter(models.User.id == record.user_id).first()
-    if not user or not user.is_active:
-        raise HTTPException(status_code=400, detail="User account is not available")
-    user.hashed_password = hash_password(payload.new_password)
-    record.used_at = utc_now()
-    db.commit()
     return schemas.MessageResponse(message="Password has been reset successfully")
 
 

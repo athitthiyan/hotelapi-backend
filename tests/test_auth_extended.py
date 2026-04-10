@@ -197,7 +197,9 @@ class TestResetPassword:
             "/auth/reset-password",
             json={"reset_token": "totally-fake-token", "new_password": "NewPass999"},
         )
-        assert r.status_code == 401
+        # Non-JWT tokens fall through to the link-token path which returns 400
+        assert r.status_code == 400
+        assert r.json()["detail"] == "Reset token is invalid or has expired"
 
     def test_reset_with_expired_token(self, client, app):
         email = "expired@test.com"
