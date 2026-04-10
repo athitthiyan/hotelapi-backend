@@ -38,8 +38,10 @@ jobs:
             routers \
             services
 
-      # TODO: Add pip-audit step to check for known vulnerabilities in dependencies
-      # Example: pip install pip-audit && pip-audit
+      - name: Audit dependencies for known vulnerabilities
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt
 
   test:
     name: Test (Python ${{ matrix.python-version }})

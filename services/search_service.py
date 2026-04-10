@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json as _json
+import logging
 from datetime import datetime, timedelta, timezone
 from threading import Lock
 from typing import Any
@@ -8,10 +10,22 @@ import models
 
 
 SEARCH_CACHE_TTL_SECONDS = 60
+SEARCH_CACHE_KEY_PREFIX = "search:"
 
-# TODO: Migrate in-memory search cache to Redis for distributed caching and production scalability
 _search_cache: dict[str, tuple[datetime, dict[str, Any]]] = {}
 _cache_lock = Lock()
+
+logger = logging.getLogger(__name__)
+
+# ── Optional Redis support ────────────────────────────────────────────────
+# When a Redis client is present, cache operations delegate to Redis.
+# On connection errors the functions silently fall back to the in-memory dict.
+_redis_state: dict[str, Any] = {"client": None}
+
+
+def _get_redis():
+    """Return the current Redis client or None."""
+    return _redis_state.get("client")
 
 
 def utc_now() -> datetime:
@@ -24,6 +38,17 @@ def make_search_cache_key(**kwargs: Any) -> str:
 
 
 def get_cached_search(cache_key: str) -> dict[str, Any] | None:
+    redis = _get_redis()
+    if redis is not None:
+        try:
+            raw = redis.get(f"{SEARCH_CACHE_KEY_PREFIX}{cache_key}")
+            if raw is None:
+                return None
+            return _json.loads(raw)
+        except Exception:
+            logger.debug("Redis get failed for key %s, falling back to memory", cache_key)
+
+    # In-memory fallback
     now = utc_now()
     with _cache_lock:
         cached = _search_cache.get(cache_key)
@@ -37,6 +62,19 @@ def get_cached_search(cache_key: str) -> dict[str, Any] | None:
 
 
 def set_cached_search(cache_key: str, payload: dict[str, Any]) -> None:
+    redis = _get_redis()
+    if redis is not None:
+        try:
+            redis.setex(
+                f"{SEARCH_CACHE_KEY_PREFIX}{cache_key}",
+                SEARCH_CACHE_TTL_SECONDS,
+                _json.dumps(payload),
+            )
+            return
+        except Exception:
+            logger.debug("Redis set failed for key %s, falling back to memory", cache_key)
+
+    # In-memory fallback
     with _cache_lock:
         _search_cache[cache_key] = (
             utc_now() + timedelta(seconds=SEARCH_CACHE_TTL_SECONDS),
@@ -45,6 +83,17 @@ def set_cached_search(cache_key: str, payload: dict[str, Any]) -> None:
 
 
 def clear_search_cache() -> None:
+    redis = _get_redis()
+    if redis is not None:
+        try:
+            cursor, keys = redis.scan(match=f"{SEARCH_CACHE_KEY_PREFIX}*", count=500)
+            if keys:
+                redis.delete(*keys)
+            return
+        except Exception:
+            logger.debug("Redis clear failed, falling back to memory clear")
+
+    # In-memory fallback
     with _cache_lock:
         _search_cache.clear()
 

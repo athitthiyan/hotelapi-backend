@@ -51,9 +51,6 @@ FAILED_PAYMENT_ESCALATED_BLOCK_THRESHOLD = 10
 FAILED_PAYMENT_ESCALATED_BLOCK_SECONDS = 15 * 60
 REFUND_SETTLEMENT_DAYS = 5
 
-# TODO: Implement circuit breaker pattern for Stripe/Razorpay API calls to gracefully degrade during gateway outages
-# Suggested implementation: use pybreaker or similar library to auto-fail fast and alert ops team
-
 
 def _broadcast(event_type: str, payload: dict, source: str = "system"):
     """Fire-and-forget WebSocket broadcast for real-time sync."""

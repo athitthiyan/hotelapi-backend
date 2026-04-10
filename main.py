@@ -30,8 +30,6 @@ def configure_logging():
     """Configure logging with JSON format in production for ELK/CloudWatch integration."""
     log_format = "%(asctime)s %(levelname)s %(name)s %(message)s"
     if settings.app_env.lower() == "production":
-        # TODO: Install json-log-formatter for structured JSON logging in production
-        # For now, using standard logging format until json-log-formatter is added to requirements
         try:
             import json_log_formatter
             handler = logging.StreamHandler(sys.stdout)
