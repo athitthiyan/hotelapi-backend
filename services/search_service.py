@@ -86,7 +86,7 @@ def clear_search_cache() -> None:
     redis = _get_redis()
     if redis is not None:
         try:
-            cursor, keys = redis.scan(match=f"{SEARCH_CACHE_KEY_PREFIX}*", count=500)
+            _, keys = redis.scan(match=f"{SEARCH_CACHE_KEY_PREFIX}*", count=500)
             if keys:
                 redis.delete(*keys)
             return
