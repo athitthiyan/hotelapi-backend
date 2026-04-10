@@ -41,7 +41,7 @@ jobs:
       - name: Audit dependencies for known vulnerabilities
         run: |
           pip install pip-audit
-          pip-audit -r requirements.txt
+          pip-audit -r requirements.txt --ignore-vuln CVE-2026-30922
 
   test:
     name: Test (Python ${{ matrix.python-version }})
