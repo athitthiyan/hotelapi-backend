@@ -11,7 +11,7 @@ Unified FastAPI backend powering the Stayvora platform — bookings, payments, i
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-**Live API:** [hotel-api-production-447d.up.railway.app/docs](https://hotel-api-production-447d.up.railway.app/docs) | **Platform:** [stayvora.co.in](https://stayvora.co.in)
+**Live API:** [api.stayvora.co.in/docs](https://api.stayvora.co.in/docs) | **Platform:** [stayvora.co.in](https://stayvora.co.in)
 
 </div>
 
