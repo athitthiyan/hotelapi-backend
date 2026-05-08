@@ -6,6 +6,7 @@ Create Date: 2026-04-04
 """
 
 from alembic import op
+from sqlalchemy import text
 
 revision = "0009"
 down_revision = "0008"
@@ -19,15 +20,10 @@ def upgrade() -> None:
     if bind.dialect.name == "sqlite":
         return
 
-    # ALTER TYPE ADD VALUE cannot run inside a transaction block in PostgreSQL.
-    # We use the raw DBAPI connection with autocommit to work around this.
-    raw = bind.connection
-    old_isolation = raw.isolation_level
-    raw.set_isolation_level(0)  # AUTOCOMMIT
-    try:
-        cursor = raw.cursor()
-        try:
-            cursor.execute(
+    enum_types = {
+        row[1]: row[0]
+        for row in bind.execute(
+            text(
                 """
                 SELECT n.nspname, t.typname
                 FROM pg_type t
@@ -36,24 +32,21 @@ def upgrade() -> None:
                   AND t.typname IN ('booking_status', 'payment_status')
                 """
             )
-            enum_types = {row[1]: row[0] for row in cursor.fetchall()}
+        )
+    }
 
-            for type_name in ("booking_status", "payment_status"):
-                schema_name = enum_types.get(type_name)
-                if schema_name is None:
-                    # Some fresh/recovered installs use non-native enum columns,
-                    # so there is no PostgreSQL enum type to alter.
-                    continue
-                quoted_schema = schema_name.replace('"', '""')
-                quoted_type = type_name.replace('"', '""')
-                cursor.execute(
-                    f'ALTER TYPE "{quoted_schema}"."{quoted_type}" '
-                    "ADD VALUE IF NOT EXISTS 'expired'"
-                )
-        finally:
-            cursor.close()
-    finally:
-        raw.set_isolation_level(old_isolation)
+    for type_name in ("booking_status", "payment_status"):
+        schema_name = enum_types.get(type_name)
+        if schema_name is None:
+            # Some fresh/recovered installs use non-native enum columns,
+            # so there is no PostgreSQL enum type to alter.
+            continue
+        quoted_schema = schema_name.replace('"', '""')
+        quoted_type = type_name.replace('"', '""')
+        op.execute(
+            f'ALTER TYPE "{quoted_schema}"."{quoted_type}" '
+            "ADD VALUE IF NOT EXISTS 'expired'"
+        )
 
 
 def downgrade() -> None:
