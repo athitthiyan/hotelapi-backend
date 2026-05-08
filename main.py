@@ -248,10 +248,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        swagger_cdn = " https://cdn.jsdelivr.net" if request.url.path in {"/docs", "/redoc"} else ""
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline'; "  # inline scripts needed for Stripe.js redirect
-            "style-src 'self' 'unsafe-inline'; "
+            f"script-src 'self' 'unsafe-inline'{swagger_cdn}; "  # inline scripts needed for Stripe.js redirect
+            f"style-src 'self' 'unsafe-inline'{swagger_cdn}; "
             "img-src 'self' data: https:; "
             "connect-src 'self' https://api.stripe.com https://checkout.razorpay.com; "
             "frame-src https://js.stripe.com https://hooks.stripe.com https://checkout.razorpay.com; "
