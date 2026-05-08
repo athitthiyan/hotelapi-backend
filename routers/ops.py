@@ -42,7 +42,14 @@ def readiness_check(db: Session = Depends(get_db)):
         database_status = "unavailable"
         status = "degraded"
 
-    counts = get_operational_counts(db)
+    try:
+        counts = get_operational_counts(db)
+    except SQLAlchemyError:
+        counts = {
+            "pending_notifications": -1,
+            "processing_payments": -1,
+        }
+        status = "degraded"
     return {
         "status": status,
         "service": "hotel-api",

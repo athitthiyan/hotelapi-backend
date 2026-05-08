@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib import error, request
 
@@ -43,6 +45,24 @@ def _check_url(name: str, url: str, expected_text: str | None = None) -> ParityC
         return ParityCheck(name, "FAIL", f"{url} failed: {exc}")
 
 
+def _check_json(name: str, url: str, validator) -> ParityCheck:
+    try:
+        status, body, _headers = _http_get(url)
+        if status != 200:
+            return ParityCheck(name, "FAIL", f"{url} returned HTTP {status}")
+        payload = json.loads(body)
+        error_detail = validator(payload)
+        if error_detail:
+            return ParityCheck(name, "FAIL", f"{url}: {error_detail}")
+        return ParityCheck(name, "PASS", f"{url} returned expected JSON")
+    except error.HTTPError as exc:
+        return ParityCheck(name, "FAIL", f"{url} returned HTTP {exc.code}")
+    except json.JSONDecodeError as exc:
+        return ParityCheck(name, "FAIL", f"{url} returned invalid JSON: {exc}")
+    except Exception as exc:  # pylint: disable=broad-except
+        return ParityCheck(name, "FAIL", f"{url} failed: {exc}")
+
+
 def _check_env(name: str, key: str) -> ParityCheck:
     return ParityCheck(name, "PASS" if os.getenv(key) else "WARN", f"{key} {'present' if os.getenv(key) else 'missing'}")
 
@@ -68,16 +88,40 @@ def _check_cors(api_base: str, origin: str) -> ParityCheck:
         return ParityCheck("CORS", "FAIL", f"Preflight failed: {exc}")
 
 
+def _validate_health(payload: dict) -> str | None:
+    checks = payload.get("checks", {})
+    if payload.get("status") != "healthy":
+        return f"status is {payload.get('status')!r}"
+    if payload.get("environment") != "production":
+        return f"environment is {payload.get('environment')!r}"
+    if checks.get("database", {}).get("status") != "connected":
+        return f"database is {checks.get('database')}"
+    if checks.get("scheduler", {}).get("status") != "running":
+        return f"scheduler is {checks.get('scheduler')}"
+    redis = checks.get("redis", {})
+    if not redis.get("configured") or not redis.get("connected") or redis.get("mode") != "redis":
+        return f"redis is {redis}"
+    return None
+
+
+def _validate_ready(payload: dict) -> str | None:
+    if payload.get("status") != "ready":
+        return f"status is {payload.get('status')!r}"
+    if payload.get("database") != "connected":
+        return f"database is {payload.get('database')!r}"
+    return None
+
+
 def _build_checks() -> list[ParityCheck]:
     web_base = os.getenv("STAYVORA_WEB_BASE_URL", "https://stayvora.co.in").rstrip("/")
-    api_base = os.getenv("STAYVORA_API_BASE_URL", "https://hotel-api-production-447d.up.railway.app").rstrip("/")
-    partner_base = os.getenv("STAYVORA_PARTNER_BASE_URL", "https://partner-portal.vercel.app").rstrip("/")
+    api_base = os.getenv("STAYVORA_API_BASE_URL", "https://api.stayvora.co.in").rstrip("/")
+    partner_base = os.getenv("STAYVORA_PARTNER_BASE_URL", "https://partner.stayvora.co.in").rstrip("/")
     return [
         _check_url("Branding", web_base, "Stayvora"),
         _check_url("Frontend routes", f"{web_base}/search"),
         _check_url("Partner portal", f"{partner_base}/login"),
-        _check_url("Backend health", f"{api_base}/health"),
-        _check_url("Backend readiness", f"{api_base}/ready"),
+        _check_json("Backend health", f"{api_base}/health", _validate_health),
+        _check_json("Backend readiness", f"{api_base}/ready", _validate_ready),
         _check_cors(api_base, web_base),
         _check_env("Auth env", "JWT_SECRET_KEY"),
         _check_env("Stripe env", "STRIPE_SECRET_KEY"),
@@ -91,6 +135,8 @@ def _write_report(results: list[ParityCheck]) -> None:
     lines = [
         "# Stayvora Deployment Parity Report",
         "",
+        f"Generated: {datetime.now(timezone.utc).isoformat()}",
+        "",
         "| Check | Status | Detail |",
         "| --- | --- | --- |",
     ]
@@ -103,6 +149,8 @@ def main() -> None:
     results = _build_checks()
     _write_report(results)
     print(json.dumps([result.__dict__ for result in results], indent=2))
+    if any(result.status == "FAIL" for result in results):
+        sys.exit(1)
 
 
 if __name__ == "__main__":
