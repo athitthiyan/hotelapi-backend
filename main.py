@@ -35,6 +35,7 @@ def configure_logging():
             handler = logging.StreamHandler(sys.stdout)
             handler.setFormatter(json_log_formatter.JSONFormatter())
             logging.root.handlers = [handler]
+            logging.root.setLevel(logging.INFO)
         except ImportError:
             logging.basicConfig(format=log_format, level=logging.INFO)
             logger.warning("json-log-formatter not installed; falling back to plain text logging")
