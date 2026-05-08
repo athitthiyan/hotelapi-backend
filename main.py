@@ -91,6 +91,32 @@ def _init_redis() -> None:
         logger.warning("Redis unavailable (%s) — falling back to in-memory search cache.", exc)
 
 
+def redis_health_status() -> dict:
+    """Return Redis cache status without exposing connection secrets."""
+    from services import search_service
+
+    client = search_service._redis_state.get("client")
+    status = {
+        "configured": bool(settings.redis_url),
+        "connected": client is not None,
+        "mode": "redis" if client is not None else "memory_fallback",
+    }
+    if client is None:
+        return status
+
+    try:
+        client.ping()
+    except Exception as exc:  # pragma: no cover - depends on live Redis state
+        status.update(
+            {
+                "connected": False,
+                "mode": "memory_fallback",
+                "error": str(exc)[:120],
+            }
+        )
+    return status
+
+
 def startup_checks(state) -> None:
     """Verify database connectivity and schema readiness at startup."""
     _init_redis()
@@ -316,6 +342,7 @@ def health_check():
     # Scheduler status
     scheduler = getattr(app.state, "hold_expiry_scheduler", None)
     checks["scheduler"] = {"status": "running" if scheduler and scheduler.running else "stopped"}
+    checks["redis"] = redis_health_status()
 
     # Notification queue depth
     try:
@@ -372,6 +399,7 @@ def deep_health_check():
         "stripe": {"configured": bool(settings.stripe_secret_key), "enabled": settings.stripe_enabled},
         "razorpay": {"configured": bool(settings.razorpay_key_id)},
     }
+    results["redis"] = redis_health_status()
 
     # Scheduler
     scheduler = getattr(app.state, "hold_expiry_scheduler", None)
