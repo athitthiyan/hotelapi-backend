@@ -49,6 +49,31 @@ def configure_logging():
 
 configure_logging()
 
+
+def _init_sentry() -> None:
+    """Initialise Sentry error monitoring if SENTRY_DSN is configured."""
+    dsn = settings.sentry_dsn
+    if not dsn:
+        logger.info("SENTRY_DSN not set — error monitoring disabled.")
+        return
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.fastapi import FastApiIntegration
+        from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+        sentry_sdk.init(
+            dsn=dsn,
+            environment=settings.app_env,
+            integrations=[FastApiIntegration(), SqlalchemyIntegration()],
+            traces_sample_rate=0.1,
+            send_default_pii=False,
+        )
+        logger.info("Sentry initialised (environment=%s).", settings.app_env)
+    except Exception as exc:  # pragma: no cover
+        logger.warning("Sentry init failed: %s", exc)
+
+
+_init_sentry()
+
 def run_expired_hold_release(session_factory=SessionLocal) -> int:
     db = session_factory()
     try:

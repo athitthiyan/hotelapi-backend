@@ -177,6 +177,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("REDIS_URL", "redis_url"),
     )
 
+    # ── Sentry (optional — error monitoring) ─────────────────────────────────
+    sentry_dsn: str = Field(
+        default="",
+        validation_alias=AliasChoices("SENTRY_DSN", "sentry_dsn"),
+    )
+
     # ── Feature Toggles ───────────────────────────────────────────────────────
     # Set STRIPE_ENABLED=false in Railway / .env to disable Stripe payments
     # without touching code. Razorpay and mock payments remain available.
