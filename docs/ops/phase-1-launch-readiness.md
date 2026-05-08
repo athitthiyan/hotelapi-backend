@@ -18,6 +18,7 @@ Run these after every production deploy:
 ```powershell
 python scripts/production_smoke.py
 python scripts/deployment_parity_check.py
+python scripts/launch_room_data.py
 ```
 
 Required live API results:
@@ -29,11 +30,24 @@ Required live API results:
 - `/health` shows scheduler `running`
 - `/ready` returns `status=ready`
 - `/health/deep` confirms Resend and payment gateway configuration
+- `/rooms?per_page=1` returns at least one active public room
 
 Reports are written to:
 
 - `reports/production_smoke_report.md`
 - `reports/production_parity_report.md`
+
+## Launch Room Data
+
+Production seeding is intentionally disabled. Create rooms through the admin or partner APIs, or use the guarded helper script with an admin bearer token:
+
+```powershell
+$env:STAYVORA_CREATE_LAUNCH_ROOM="true"
+$env:STAYVORA_ADMIN_TOKEN="<admin access token>"
+python scripts/launch_room_data.py
+```
+
+The script creates one active Chennai launch room and 30 days of available inventory only when explicitly enabled.
 
 ## Phase 1 Work Queue
 
