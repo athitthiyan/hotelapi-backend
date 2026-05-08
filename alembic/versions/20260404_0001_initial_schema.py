@@ -3,6 +3,7 @@
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.engine.reflection import Inspector
+from sqlalchemy.dialects.postgresql import ENUM as PgEnum
 
 
 revision = "20260404_0001"
@@ -10,40 +11,32 @@ down_revision = None
 branch_labels = None
 depends_on = None
 
-# create_type=False: we manage enum creation manually with checkfirst=True
-# so that op.create_table does not attempt a second CREATE TYPE
-room_type_enum = sa.Enum(
-    "standard",
-    "deluxe",
-    "suite",
-    "penthouse",
-    name="room_type",
-    create_type=False,
+# Use PgEnum (PostgreSQL-specific) with create_type=False so that op.create_table
+# never auto-issues CREATE TYPE — we manage the lifecycle ourselves via checkfirst=True.
+# sa.Enum with create_type=False does NOT reliably suppress CREATE TYPE in all
+# SQLAlchemy versions; PgEnum does.
+room_type_enum = PgEnum(
+    "standard", "deluxe", "suite", "penthouse",
+    name="room_type", create_type=False,
 )
-booking_status_enum = sa.Enum(
-    "pending",
-    "confirmed",
-    "cancelled",
-    "completed",
-    name="booking_status",
-    create_type=False,
+booking_status_enum = PgEnum(
+    "pending", "confirmed", "cancelled", "completed",
+    name="booking_status", create_type=False,
 )
-payment_status_enum = sa.Enum(
-    "pending",
-    "paid",
-    "failed",
-    "refunded",
-    name="payment_status",
-    create_type=False,
+payment_status_enum = PgEnum(
+    "pending", "paid", "failed", "refunded",
+    name="payment_status", create_type=False,
 )
-transaction_status_enum = sa.Enum(
-    "pending",
-    "success",
-    "failed",
-    "refunded",
-    name="transaction_status",
-    create_type=False,
+transaction_status_enum = PgEnum(
+    "pending", "success", "failed", "refunded",
+    name="transaction_status", create_type=False,
 )
+
+# Generic sa.Enum objects used only for .create()/.drop() calls (dialect-agnostic)
+_room_type_sa = sa.Enum("standard", "deluxe", "suite", "penthouse", name="room_type")
+_booking_status_sa = sa.Enum("pending", "confirmed", "cancelled", "completed", name="booking_status")
+_payment_status_sa = sa.Enum("pending", "paid", "failed", "refunded", name="payment_status")
+_transaction_status_sa = sa.Enum("pending", "success", "failed", "refunded", name="transaction_status")
 
 
 def _has_table(bind, table_name: str) -> bool:
@@ -54,11 +47,11 @@ def _has_table(bind, table_name: str) -> bool:
 def upgrade() -> None:
     bind = op.get_bind()
 
-    # Create enum types only if they don't already exist.
-    # create_type=False on the enum objects above prevents op.create_table from
-    # auto-issuing CREATE TYPE, so we own the lifecycle here exclusively.
-    for enum in (room_type_enum, booking_status_enum, payment_status_enum, transaction_status_enum):
-        enum.create(bind, checkfirst=True)
+    # Create enum types only if they don't already exist (PostgreSQL only —
+    # SQLite has no native enum type so we skip this block entirely).
+    if bind.dialect.name != "sqlite":
+        for enum in (_room_type_sa, _booking_status_sa, _payment_status_sa, _transaction_status_sa):
+            enum.create(bind, checkfirst=True)
 
     if not _has_table(bind, "rooms"):
         op.create_table(
@@ -180,7 +173,8 @@ def downgrade() -> None:
     op.drop_table("rooms")
 
     bind = op.get_bind()
-    transaction_status_enum.drop(bind, checkfirst=True)
-    payment_status_enum.drop(bind, checkfirst=True)
-    booking_status_enum.drop(bind, checkfirst=True)
-    room_type_enum.drop(bind, checkfirst=True)
+    if bind.dialect.name != "sqlite":
+        _transaction_status_sa.drop(bind, checkfirst=True)
+        _payment_status_sa.drop(bind, checkfirst=True)
+        _booking_status_sa.drop(bind, checkfirst=True)
+        _room_type_sa.drop(bind, checkfirst=True)
