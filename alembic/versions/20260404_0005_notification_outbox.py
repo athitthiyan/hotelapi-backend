@@ -2,6 +2,7 @@
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import ENUM as PgEnum
 
 
 revision = "20260404_0005"
@@ -9,7 +10,15 @@ down_revision = "20260404_0004"
 branch_labels = None
 depends_on = None
 
-notification_status_enum = sa.Enum(
+notification_status_enum = PgEnum(
+    "pending",
+    "sent",
+    "failed",
+    name="notification_status",
+    create_type=False,
+)
+
+_notification_status_sa = sa.Enum(
     "pending",
     "sent",
     "failed",
@@ -19,7 +28,8 @@ notification_status_enum = sa.Enum(
 
 def upgrade() -> None:
     bind = op.get_bind()
-    notification_status_enum.create(bind, checkfirst=True)
+    if bind.dialect.name != "sqlite":
+        _notification_status_sa.create(bind, checkfirst=True)
 
     op.create_table(
         "notification_outbox",
@@ -54,4 +64,5 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_notification_outbox_id"), table_name="notification_outbox")
     op.drop_table("notification_outbox")
     bind = op.get_bind()
-    notification_status_enum.drop(bind, checkfirst=True)
+    if bind.dialect.name != "sqlite":
+        _notification_status_sa.drop(bind, checkfirst=True)

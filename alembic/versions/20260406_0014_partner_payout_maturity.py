@@ -8,6 +8,7 @@ Create Date: 2026-04-06 23:30:00.000000
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.engine.reflection import Inspector
+from sqlalchemy.dialects.postgresql import ENUM as PgEnum
 
 
 revision = "20260406_0014"
@@ -16,7 +17,17 @@ branch_labels = None
 depends_on = None
 
 
-payout_status = sa.Enum(
+payout_status = PgEnum(
+    "pending",
+    "processing",
+    "settled",
+    "failed",
+    "reversed",
+    name="payout_status",
+    create_type=False,
+)
+
+_payout_status_sa = sa.Enum(
     "pending",
     "processing",
     "settled",
@@ -33,7 +44,8 @@ def _existing_columns(table: str) -> set[str]:
 
 def upgrade() -> None:
     bind = op.get_bind()
-    payout_status.create(bind, checkfirst=True)
+    if bind.dialect.name != "sqlite":
+        _payout_status_sa.create(bind, checkfirst=True)
     if "statement_generated_at" not in _existing_columns("partner_payouts"):
         op.add_column(
             "partner_payouts",
@@ -70,4 +82,5 @@ def downgrade() -> None:
         )
     if "statement_generated_at" in _existing_columns("partner_payouts"):
         op.drop_column("partner_payouts", "statement_generated_at")
-    payout_status.drop(op.get_bind(), checkfirst=True)
+    if bind.dialect.name != "sqlite":
+        _payout_status_sa.drop(bind, checkfirst=True)

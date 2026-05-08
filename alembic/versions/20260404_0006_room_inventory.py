@@ -2,6 +2,7 @@
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import ENUM as PgEnum
 
 
 revision = "20260404_0006"
@@ -9,7 +10,15 @@ down_revision = "20260404_0005"
 branch_labels = None
 depends_on = None
 
-inventory_status_enum = sa.Enum(
+inventory_status_enum = PgEnum(
+    "available",
+    "locked",
+    "blocked",
+    name="inventory_status",
+    create_type=False,
+)
+
+_inventory_status_sa = sa.Enum(
     "available",
     "locked",
     "blocked",
@@ -19,7 +28,8 @@ inventory_status_enum = sa.Enum(
 
 def upgrade() -> None:
     bind = op.get_bind()
-    inventory_status_enum.create(bind, checkfirst=True)
+    if bind.dialect.name != "sqlite":
+        _inventory_status_sa.create(bind, checkfirst=True)
 
     op.create_table(
         "room_inventory",
@@ -48,4 +58,5 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_room_inventory_id"), table_name="room_inventory")
     op.drop_table("room_inventory")
     bind = op.get_bind()
-    inventory_status_enum.drop(bind, checkfirst=True)
+    if bind.dialect.name != "sqlite":
+        _inventory_status_sa.drop(bind, checkfirst=True)

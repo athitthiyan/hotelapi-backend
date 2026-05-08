@@ -8,6 +8,7 @@ Create Date: 2026-04-06 22:30:00.000000
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.engine.reflection import Inspector
+from sqlalchemy.dialects.postgresql import ENUM as PgEnum
 
 
 revision = "20260406_0013"
@@ -16,7 +17,18 @@ branch_labels = None
 depends_on = None
 
 
-refund_status = sa.Enum(
+refund_status = PgEnum(
+    "refund_requested",
+    "refund_initiated",
+    "refund_processing",
+    "refund_success",
+    "refund_failed",
+    "refund_reversed",
+    name="refund_status",
+    create_type=False,
+)
+
+_refund_status_sa = sa.Enum(
     "refund_requested",
     "refund_initiated",
     "refund_processing",
@@ -33,7 +45,9 @@ def _existing_columns(table: str) -> set[str]:
 
 
 def upgrade() -> None:
-    refund_status.create(op.get_bind(), checkfirst=True)
+    bind = op.get_bind()
+    if bind.dialect.name != "sqlite":
+        _refund_status_sa.create(bind, checkfirst=True)
     columns = _existing_columns("bookings")
     if "refund_status" not in columns:
         op.add_column("bookings", sa.Column("refund_status", refund_status, nullable=True))
@@ -88,4 +102,6 @@ def downgrade() -> None:
     ):
         if column in columns:
             op.drop_column("bookings", column)
-    refund_status.drop(op.get_bind(), checkfirst=True)
+    bind = op.get_bind()
+    if bind.dialect.name != "sqlite":
+        _refund_status_sa.drop(bind, checkfirst=True)
