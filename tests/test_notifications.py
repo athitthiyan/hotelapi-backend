@@ -1,6 +1,13 @@
+from datetime import datetime, timedelta, timezone
+
 from routers.auth import hash_password
 
 import models
+
+
+def _future_date(days_from_now: int) -> str:
+    dt = datetime.now(timezone.utc) + timedelta(days=days_from_now)
+    return dt.strftime("%Y-%m-%dT00:00:00+00:00")
 
 
 def admin_headers(client, db_session):
@@ -197,8 +204,8 @@ def test_notification_outbox_processing_sent_and_failed_paths(client, db_session
             "email": "valid@example.com",
             "phone": "1234567890",
             "room_id": room.id,
-            "check_in": "2026-04-10T00:00:00+00:00",
-            "check_out": "2026-04-12T00:00:00+00:00",
+            "check_in": _future_date(7),
+            "check_out": _future_date(9),
             "guests": 2,
             "special_requests": "",
         },
@@ -210,8 +217,8 @@ def test_notification_outbox_processing_sent_and_failed_paths(client, db_session
             "email": "fail-delivery+broken@example.com",
             "phone": "1234567890",
             "room_id": room.id,
-            "check_in": "2026-04-15T00:00:00+00:00",
-            "check_out": "2026-04-17T00:00:00+00:00",
+            "check_in": _future_date(14),
+            "check_out": _future_date(16),
             "guests": 2,
             "special_requests": "",
         },

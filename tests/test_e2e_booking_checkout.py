@@ -1,8 +1,15 @@
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from routers.auth import hash_password
 
 import models
+
+
+def _future_date(days_from_now: int) -> str:
+    """Return an ISO-8601 UTC datetime string N days in the future."""
+    dt = datetime.now(timezone.utc) + timedelta(days=days_from_now)
+    return dt.strftime("%Y-%m-%dT00:00:00+00:00")
 
 
 def auth_header(token: str) -> dict:
@@ -160,8 +167,8 @@ def test_e2e_customer_booking_to_confirmation_flow(client, db_session):
             "email": "customer-e2e@example.com",
             "phone": "9876543210",
             "room_id": room_id,
-            "check_in": "2026-04-20T00:00:00+00:00",
-            "check_out": "2026-04-23T00:00:00+00:00",
+            "check_in": _future_date(7),
+            "check_out": _future_date(10),
             "guests": 2,
             "special_requests": "Late check-in",
         },
