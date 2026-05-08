@@ -168,6 +168,15 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("MICROSOFT_CLIENT_ID", "microsoft_client_id"),
     )
+    # ── Redis (optional — search cache) ──────────────────────────────────────
+    # Set REDIS_URL to a Redis connection string (e.g. redis://localhost:6379 or
+    # rediss://:<password>@<host>:6379) to enable Redis-backed search caching.
+    # When absent, search_service falls back to an in-process memory cache.
+    redis_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("REDIS_URL", "redis_url"),
+    )
+
     # ── Feature Toggles ───────────────────────────────────────────────────────
     # Set STRIPE_ENABLED=false in Railway / .env to disable Stripe payments
     # without touching code. Razorpay and mock payments remain available.

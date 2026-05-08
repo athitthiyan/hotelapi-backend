@@ -69,8 +69,30 @@ def run_notification_processor(session_factory=SessionLocal) -> dict:
         db.close()
 
 
+def _init_redis() -> None:
+    """Connect to Redis if REDIS_URL is configured.  Silently skips on error."""
+    if not settings.redis_url:
+        logger.info("REDIS_URL not set — search cache will use in-process memory fallback.")
+        return
+    try:
+        import redis as redis_lib
+        from services import search_service
+        client = redis_lib.from_url(
+            settings.redis_url,
+            decode_responses=True,
+            socket_connect_timeout=3,
+            socket_timeout=3,
+        )
+        client.ping()  # fail fast if unreachable
+        search_service._redis_state["client"] = client
+        logger.info("Redis connected — search cache delegated to Redis.")
+    except Exception as exc:  # pragma: no cover
+        logger.warning("Redis unavailable (%s) — falling back to in-memory search cache.", exc)
+
+
 def startup_checks(state) -> None:
     """Verify database connectivity and schema readiness at startup."""
+    _init_redis()
     try:
         validate_runtime_configuration(settings)
         with engine.begin() as connection:
@@ -225,6 +247,17 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "  # inline scripts needed for Stripe.js redirect
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: https:; "
+            "connect-src 'self' https://api.stripe.com https://checkout.razorpay.com; "
+            "frame-src https://js.stripe.com https://hooks.stripe.com https://checkout.razorpay.com; "
+            "object-src 'none'; "
+            "base-uri 'self';"
+        )
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
         return response
 
 app.add_middleware(SecurityHeadersMiddleware)
