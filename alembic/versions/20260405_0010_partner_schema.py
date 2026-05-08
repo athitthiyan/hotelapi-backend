@@ -83,7 +83,7 @@ def upgrade() -> None:
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("NOW()"),
+            server_default=sa.func.now(),
             nullable=False,
         ),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
@@ -94,16 +94,22 @@ def upgrade() -> None:
     )
 
     # ── 3. Add partner_hotel_id FK to rooms ────────────────────────────────
+    # Add column without inline FK (SQLite cannot ALTER TABLE ADD CONSTRAINT)
     op.add_column(
         "rooms",
-        sa.Column(
-            "partner_hotel_id",
-            sa.Integer(),
-            sa.ForeignKey("partner_hotels.id"),
-            nullable=True,
-        ),
+        sa.Column("partner_hotel_id", sa.Integer(), nullable=True),
     )
     op.create_index("ix_rooms_partner_hotel_id", "rooms", ["partner_hotel_id"])
+    # Add FK constraint separately — PostgreSQL only
+    bind = op.get_bind()
+    if bind.dialect.name != "sqlite":
+        op.create_foreign_key(
+            "fk_rooms_partner_hotel_id",
+            "rooms",
+            "partner_hotels",
+            ["partner_hotel_id"],
+            ["id"],
+        )
 
     # ── 4. Create partner_payouts ──────────────────────────────────────────
     op.create_table(
@@ -131,7 +137,7 @@ def upgrade() -> None:
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("NOW()"),
+            server_default=sa.func.now(),
             nullable=False,
         ),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),

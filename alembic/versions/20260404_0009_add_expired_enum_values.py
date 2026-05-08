@@ -14,10 +14,14 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # SQLite has no enum types — skip entirely
+    bind = op.get_bind()
+    if bind.dialect.name == "sqlite":
+        return
+
     # ALTER TYPE ADD VALUE cannot run inside a transaction block in PostgreSQL.
     # We use the raw DBAPI connection with autocommit to work around this.
-    conn = op.get_bind()
-    raw = conn.connection
+    raw = bind.connection
     old_isolation = raw.isolation_level
     raw.set_isolation_level(0)  # AUTOCOMMIT
     try:

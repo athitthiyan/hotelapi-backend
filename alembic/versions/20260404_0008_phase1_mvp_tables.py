@@ -7,6 +7,8 @@ Create Date: 2026-04-04
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.engine.reflection import Inspector
+
 
 revision = "0008"
 down_revision = "20260404_0007"
@@ -14,15 +16,46 @@ branch_labels = None
 depends_on = None
 
 
+def _existing_columns(table: str) -> set:
+    bind = op.get_bind()
+    inspector = Inspector.from_engine(bind)
+    return {col["name"] for col in inspector.get_columns(table)}
+
+
+def _existing_indexes(table: str) -> set:
+    bind = op.get_bind()
+    inspector = Inspector.from_engine(bind)
+    return {idx["name"] for idx in inspector.get_indexes(table)}
+
+
+def _has_table(name: str) -> bool:
+    bind = op.get_bind()
+    inspector = Inspector.from_engine(bind)
+    return name in inspector.get_table_names()
+
+
 def upgrade() -> None:
     # ── Extend users table ──────────────────────────────────────────────────
-    op.add_column("users", sa.Column("phone", sa.String(30), nullable=True))
-    op.add_column("users", sa.Column("avatar_url", sa.String(500), nullable=True))
-    op.add_column("users", sa.Column("google_id", sa.String(128), nullable=True))
-    op.alter_column("users", "hashed_password", nullable=True)
-    op.create_index("ix_users_google_id", "users", ["google_id"], unique=True)
+    cols = _existing_columns("users")
+    if "phone" not in cols:
+        op.add_column("users", sa.Column("phone", sa.String(30), nullable=True))
+    if "avatar_url" not in cols:
+        op.add_column("users", sa.Column("avatar_url", sa.String(500), nullable=True))
+    if "google_id" not in cols:
+        op.add_column("users", sa.Column("google_id", sa.String(128), nullable=True))
+
+    # alter_column (make hashed_password nullable) is a no-op on SQLite —
+    # SQLite does not support modifying column constraints after creation.
+    bind = op.get_bind()
+    if bind.dialect.name != "sqlite":
+        op.alter_column("users", "hashed_password", nullable=True)
+
+    if "ix_users_google_id" not in _existing_indexes("users"):
+        op.create_index("ix_users_google_id", "users", ["google_id"], unique=True)
 
     # ── reviews ────────────────────────────────────────────────────────────
+    if _has_table("reviews"):
+        return  # already applied; remaining tables exist too
     op.create_table(
         "reviews",
         sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
@@ -42,7 +75,7 @@ def upgrade() -> None:
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("NOW()"),
+            server_default=sa.func.now(),
             nullable=False,
         ),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
@@ -60,7 +93,7 @@ def upgrade() -> None:
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("NOW()"),
+            server_default=sa.func.now(),
             nullable=False,
         ),
         sa.UniqueConstraint("user_id", "room_id", name="uq_wishlists_user_room"),
@@ -79,7 +112,7 @@ def upgrade() -> None:
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("NOW()"),
+            server_default=sa.func.now(),
             nullable=False,
         ),
     )

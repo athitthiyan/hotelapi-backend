@@ -7,6 +7,7 @@ Create Date: 2026-04-06 22:30:00.000000
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.engine.reflection import Inspector
 
 
 revision = "20260406_0013"
@@ -26,16 +27,33 @@ refund_status = sa.Enum(
 )
 
 
+def _existing_columns(table: str) -> set[str]:
+    inspector = Inspector.from_engine(op.get_bind())
+    return {col["name"] for col in inspector.get_columns(table)}
+
+
 def upgrade() -> None:
     refund_status.create(op.get_bind(), checkfirst=True)
-    op.add_column("bookings", sa.Column("refund_status", refund_status, nullable=True))
-    op.add_column("bookings", sa.Column("refund_amount", sa.Float(), nullable=False, server_default="0"))
-    op.add_column("bookings", sa.Column("refund_requested_at", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("bookings", sa.Column("refund_initiated_at", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("bookings", sa.Column("refund_expected_settlement_at", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("bookings", sa.Column("refund_completed_at", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("bookings", sa.Column("refund_failed_reason", sa.String(length=500), nullable=True))
-    op.add_column("bookings", sa.Column("refund_gateway_reference", sa.String(length=120), nullable=True))
+    columns = _existing_columns("bookings")
+    if "refund_status" not in columns:
+        op.add_column("bookings", sa.Column("refund_status", refund_status, nullable=True))
+    if "refund_amount" not in columns:
+        op.add_column("bookings", sa.Column("refund_amount", sa.Float(), nullable=False, server_default="0"))
+    if "refund_requested_at" not in columns:
+        op.add_column("bookings", sa.Column("refund_requested_at", sa.DateTime(timezone=True), nullable=True))
+    if "refund_initiated_at" not in columns:
+        op.add_column("bookings", sa.Column("refund_initiated_at", sa.DateTime(timezone=True), nullable=True))
+    if "refund_expected_settlement_at" not in columns:
+        op.add_column(
+            "bookings",
+            sa.Column("refund_expected_settlement_at", sa.DateTime(timezone=True), nullable=True),
+        )
+    if "refund_completed_at" not in columns:
+        op.add_column("bookings", sa.Column("refund_completed_at", sa.DateTime(timezone=True), nullable=True))
+    if "refund_failed_reason" not in columns:
+        op.add_column("bookings", sa.Column("refund_failed_reason", sa.String(length=500), nullable=True))
+    if "refund_gateway_reference" not in columns:
+        op.add_column("bookings", sa.Column("refund_gateway_reference", sa.String(length=120), nullable=True))
 
     op.execute(
         """
@@ -47,16 +65,27 @@ def upgrade() -> None:
         """
     )
 
-    op.alter_column("bookings", "refund_amount", server_default=None)
+    with op.batch_alter_table("bookings") as batch_op:
+        batch_op.alter_column(
+            "refund_amount",
+            existing_type=sa.Float(),
+            existing_nullable=False,
+            server_default=None,
+        )
 
 
 def downgrade() -> None:
-    op.drop_column("bookings", "refund_gateway_reference")
-    op.drop_column("bookings", "refund_failed_reason")
-    op.drop_column("bookings", "refund_completed_at")
-    op.drop_column("bookings", "refund_expected_settlement_at")
-    op.drop_column("bookings", "refund_initiated_at")
-    op.drop_column("bookings", "refund_requested_at")
-    op.drop_column("bookings", "refund_amount")
-    op.drop_column("bookings", "refund_status")
+    columns = _existing_columns("bookings")
+    for column in (
+        "refund_gateway_reference",
+        "refund_failed_reason",
+        "refund_completed_at",
+        "refund_expected_settlement_at",
+        "refund_initiated_at",
+        "refund_requested_at",
+        "refund_amount",
+        "refund_status",
+    ):
+        if column in columns:
+            op.drop_column("bookings", column)
     refund_status.drop(op.get_bind(), checkfirst=True)

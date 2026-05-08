@@ -7,6 +7,7 @@ Create Date: 2026-04-06 23:30:00.000000
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.engine.reflection import Inspector
 
 
 revision = "20260406_0014"
@@ -25,12 +26,19 @@ payout_status = sa.Enum(
 )
 
 
+def _existing_columns(table: str) -> set[str]:
+    inspector = Inspector.from_engine(op.get_bind())
+    return {col["name"] for col in inspector.get_columns(table)}
+
+
 def upgrade() -> None:
-    payout_status.create(op.get_bind(), checkfirst=True)
-    op.add_column(
-        "partner_payouts",
-        sa.Column("statement_generated_at", sa.DateTime(timezone=True), nullable=True),
-    )
+    bind = op.get_bind()
+    payout_status.create(bind, checkfirst=True)
+    if "statement_generated_at" not in _existing_columns("partner_payouts"):
+        op.add_column(
+            "partner_payouts",
+            sa.Column("statement_generated_at", sa.DateTime(timezone=True), nullable=True),
+        )
     op.execute(
         """
         UPDATE partner_payouts
@@ -40,22 +48,26 @@ def upgrade() -> None:
         END
         """
     )
-    op.execute(
-        """
-        ALTER TABLE partner_payouts
-        ALTER COLUMN status TYPE payout_status
-        USING status::payout_status
-        """
-    )
+    if bind.dialect.name != "sqlite":
+        op.execute(
+            """
+            ALTER TABLE partner_payouts
+            ALTER COLUMN status TYPE payout_status
+            USING status::payout_status
+            """
+        )
 
 
 def downgrade() -> None:
-    op.execute(
-        """
-        ALTER TABLE partner_payouts
-        ALTER COLUMN status TYPE VARCHAR(20)
-        USING status::text
-        """
-    )
-    op.drop_column("partner_payouts", "statement_generated_at")
+    bind = op.get_bind()
+    if bind.dialect.name != "sqlite":
+        op.execute(
+            """
+            ALTER TABLE partner_payouts
+            ALTER COLUMN status TYPE VARCHAR(20)
+            USING status::text
+            """
+        )
+    if "statement_generated_at" in _existing_columns("partner_payouts"):
+        op.drop_column("partner_payouts", "statement_generated_at")
     payout_status.drop(op.get_bind(), checkfirst=True)
