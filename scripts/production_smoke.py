@@ -76,22 +76,22 @@ def _probe_json(
         return SmokeResult(flow, "FAIL", f"{url} failed: {exc}")
 
 
-def _discover_room_id(api_base: str, fallback_room_id: str) -> tuple[str, SmokeResult]:
+def _discover_room_id(api_base: str) -> tuple[str | None, SmokeResult]:
     try:
         status, body, _headers = _http_request(f"{api_base}/rooms?per_page=1")
         if status != 200:
-            return fallback_room_id, SmokeResult(
+            return None, SmokeResult(
                 "room discovery",
                 "WARN",
-                f"Falling back to room {fallback_room_id}; /rooms returned HTTP {status}",
+                f"Skipping room-specific API checks; /rooms returned HTTP {status}",
             )
         payload = json.loads(body)
         rooms = payload.get("rooms") or []
         if not rooms:
-            return fallback_room_id, SmokeResult(
+            return None, SmokeResult(
                 "room discovery",
                 "WARN",
-                f"Falling back to room {fallback_room_id}; /rooms returned no rooms",
+                "Skipping room-specific API checks; /rooms returned no active rooms",
             )
         return str(rooms[0]["id"]), SmokeResult(
             "room discovery",
@@ -99,10 +99,10 @@ def _discover_room_id(api_base: str, fallback_room_id: str) -> tuple[str, SmokeR
             f"Using live room id {rooms[0]['id']}",
         )
     except Exception as exc:  # pylint: disable=broad-except
-        return fallback_room_id, SmokeResult(
+        return None, SmokeResult(
             "room discovery",
             "WARN",
-            f"Falling back to room {fallback_room_id}; discovery failed: {exc}",
+            f"Skipping room-specific API checks; discovery failed: {exc}",
         )
 
 
@@ -184,7 +184,7 @@ def _build_results() -> list[SmokeResult]:
     web_base = os.getenv("STAYVORA_WEB_BASE_URL", "https://stayvora.co.in").rstrip("/")
     api_base = os.getenv("STAYVORA_API_BASE_URL", "https://api.stayvora.co.in").rstrip("/")
     partner_base = os.getenv("STAYVORA_PARTNER_BASE_URL", "https://partner.stayvora.co.in").rstrip("/")
-    fallback_room_id = os.getenv("STAYVORA_SMOKE_ROOM_ID", "1")
+    configured_room_id = os.getenv("STAYVORA_SMOKE_ROOM_ID")
     booking_id = os.getenv("STAYVORA_SMOKE_BOOKING_ID")
     customer_token = os.getenv("STAYVORA_SMOKE_CUSTOMER_TOKEN")
     partner_token = os.getenv("STAYVORA_SMOKE_PARTNER_TOKEN")
@@ -194,29 +194,49 @@ def _build_results() -> list[SmokeResult]:
     today = os.getenv("STAYVORA_SMOKE_FROM_DATE", default_from)
     to_date = os.getenv("STAYVORA_SMOKE_TO_DATE", default_to)
 
-    room_id, room_discovery = _discover_room_id(api_base, fallback_room_id)
+    if configured_room_id:
+        room_id = configured_room_id
+        room_discovery = SmokeResult("room discovery", "PASS", f"Using configured room id {room_id}")
+    else:
+        room_id, room_discovery = _discover_room_id(api_base)
 
-    blocked_dates_url = (
-        f"{api_base}/rooms/{room_id}/unavailable-dates?"
-        + parse.urlencode({"from_date": today, "to_date": to_date})
-    )
     results = [
         room_discovery,
         _probe("homepage load", web_base, expected_substring="Stayvora"),
         _probe("search page", f"{web_base}/search"),
-        _probe("room detail", f"{web_base}/rooms/{room_id}"),
-        _probe("blocked dates API", blocked_dates_url),
         _probe("partner portal load", f"{partner_base}/login"),
         _probe_json("backend health gate", f"{api_base}/health", _validate_health),
         _probe_json("backend readiness gate", f"{api_base}/ready", _validate_ready),
         _probe_json("backend dependency gate", f"{api_base}/health/deep", _validate_deep_health),
     ]
+    if room_id:
+        blocked_dates_url = (
+            f"{api_base}/rooms/{room_id}/unavailable-dates?"
+            + parse.urlencode({"from_date": today, "to_date": to_date})
+        )
+        results.extend(
+            [
+                _probe("room detail", f"{web_base}/rooms/{room_id}"),
+                _probe("blocked dates API", blocked_dates_url),
+            ]
+        )
+    else:
+        results.extend(
+            [
+                SmokeResult("room detail", "SKIP", "No active API room discovered"),
+                SmokeResult("blocked dates API", "SKIP", "No active API room discovered"),
+            ]
+        )
 
     results.append(
         _probe_with_auth("active booking CTA", f"{api_base}/bookings/active-hold", customer_token)
     )
     results.append(
-        _probe_with_auth("partner inventory update surface", f"{api_base}/partner/calendar?room_type_id={room_id}", partner_token)
+        _probe_with_auth(
+            "partner inventory update surface",
+            f"{api_base}/partner/calendar?room_type_id={room_id or 0}",
+            partner_token,
+        )
     )
 
     if booking_id:

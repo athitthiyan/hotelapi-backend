@@ -1,6 +1,6 @@
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-import models
 from routers.payments import reconcile_stuck_payments
 from services.notification_service import process_pending_notifications
 
@@ -23,23 +23,24 @@ def run_maintenance_cycle(
 
 
 def get_operational_counts(db: Session) -> dict[str, int]:
-    pending_notifications = (
-        db.query(models.NotificationOutbox)
-        .filter(models.NotificationOutbox.status == models.NotificationStatus.PENDING)
-        .count()
-    )
-    processing_payments = (
-        db.query(models.Transaction)
-        .filter(
-            models.Transaction.status.in_(
-                [
-                    models.TransactionStatus.PENDING,
-                    models.TransactionStatus.PROCESSING,
-                ]
-            )
+    pending_notifications = db.execute(
+        text(
+            """
+            SELECT count(*)
+            FROM notification_outbox
+            WHERE CAST(status AS TEXT) = 'pending'
+            """
         )
-        .count()
-    )
+    ).scalar_one()
+    processing_payments = db.execute(
+        text(
+            """
+            SELECT count(*)
+            FROM transactions
+            WHERE CAST(status AS TEXT) IN ('pending', 'processing')
+            """
+        )
+    ).scalar_one()
     return {
         "pending_notifications": pending_notifications,
         "processing_payments": processing_payments,
