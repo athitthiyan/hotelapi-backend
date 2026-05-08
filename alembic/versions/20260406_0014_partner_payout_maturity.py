@@ -64,8 +64,20 @@ def upgrade() -> None:
         op.execute(
             """
             ALTER TABLE partner_payouts
+            ALTER COLUMN status DROP DEFAULT
+            """
+        )
+        op.execute(
+            """
+            ALTER TABLE partner_payouts
             ALTER COLUMN status TYPE payout_status
             USING status::payout_status
+            """
+        )
+        op.execute(
+            """
+            ALTER TABLE partner_payouts
+            ALTER COLUMN status SET DEFAULT 'pending'::payout_status
             """
         )
 
@@ -76,8 +88,20 @@ def downgrade() -> None:
         op.execute(
             """
             ALTER TABLE partner_payouts
+            ALTER COLUMN status DROP DEFAULT
+            """
+        )
+        op.execute(
+            """
+            ALTER TABLE partner_payouts
             ALTER COLUMN status TYPE VARCHAR(20)
             USING status::text
+            """
+        )
+        op.execute(
+            """
+            ALTER TABLE partner_payouts
+            ALTER COLUMN status SET DEFAULT 'pending'
             """
         )
     if "statement_generated_at" in _existing_columns("partner_payouts"):
