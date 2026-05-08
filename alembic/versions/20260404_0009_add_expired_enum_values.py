@@ -6,6 +6,7 @@ Create Date: 2026-04-04
 """
 
 from alembic import op
+from sqlalchemy import text
 
 revision = "0009"
 down_revision = "0008"
@@ -17,6 +18,27 @@ def upgrade() -> None:
     # SQLite has no enum types — skip entirely
     bind = op.get_bind()
     if bind.dialect.name == "sqlite":
+        return
+
+    existing_types = {
+        row[0]
+        for row in bind.execute(
+            text(
+                """
+                SELECT typname
+                FROM pg_type t
+                JOIN pg_namespace n ON n.oid = t.typnamespace
+                WHERE n.nspname = current_schema()
+                  AND t.typtype = 'e'
+                  AND typname IN ('booking_status', 'payment_status')
+                """
+            )
+        )
+    }
+    if {"booking_status", "payment_status"} - existing_types:
+        # Fresh installs may use non-native enum columns, so there is no
+        # PostgreSQL enum type to alter. Existing installs with native enum
+        # types are still updated below.
         return
 
     # ALTER TYPE ADD VALUE cannot run inside a transaction block in PostgreSQL.
