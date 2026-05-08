@@ -6,7 +6,7 @@ Phases covered:
   1. Payment methods: UPI, cards, net banking, wallets
   2. Order creation with idempotency
   3. Signature verification (HMAC SHA-256)
-  4. Webhook: payment.captured, payment.failed, refund.processed
+  4. Webhook: payment.captured, payment.failed, refund.processed, refund.failed, payment.dispute.created
   5. Hold expiry edge case: auto-refund if payment succeeds after hold expiry
   6. Refund flow: full + partial via Razorpay API
 """
@@ -589,6 +589,10 @@ async def razorpay_webhook(
         return _handle_payment_failed(db, payload)
     if event_type == "refund.processed":
         return _handle_refund_processed(db, payload)
+    if event_type == "refund.failed":
+        return _handle_refund_failed(db, payload)
+    if event_type == "payment.dispute.created":
+        return _handle_dispute_created(db, payload)
 
     logger.debug("Unhandled Razorpay webhook event: %s", event_type)
     return {"status": "ignored", "event": event_type}
@@ -822,6 +826,114 @@ def _handle_refund_processed(db: Session, payload: dict) -> dict:
         "booking_ref": booking.booking_ref,
         "refund_status": refund_status,
     }
+
+
+def _handle_refund_failed(db: Session, payload: dict) -> dict:
+    """Handle refund.failed webhook — mark refund as failed and alert admins."""
+    refund_entity = payload.get("refund", {}).get("entity", {})
+    razorpay_payment_id = refund_entity.get("payment_id", "")
+    refund_id = refund_entity.get("id", "")
+    error_description = refund_entity.get("description", "Refund failed via Razorpay webhook")
+
+    transaction = _find_transaction_by_payment_id(db, razorpay_payment_id) if razorpay_payment_id else None
+
+    booking = None
+    if transaction:
+        booking = db.query(models.Booking).filter(models.Booking.id == transaction.booking_id).first()
+
+    if booking:
+        # Only overwrite if not already succeeded
+        if booking.refund_status != models.RefundStatus.REFUND_SUCCESS:
+            booking.refund_status = models.RefundStatus.REFUND_FAILED
+            booking.refund_failed_reason = f"Razorpay refund.failed: {error_description}"
+            booking.refund_gateway_reference = refund_id
+
+        # Create admin notification so the team can manually process the refund
+        notification = models.AdminNotification(
+            user_id=booking.user_id if booking.user_id else 1,
+            type="refund_failed",
+            title="Refund Failed — Manual Action Required",
+            message=(
+                f"Razorpay refund {refund_id} failed for booking {booking.booking_ref}. "
+                f"Reason: {error_description}. Please process the refund manually."
+            ),
+            metadata_json={
+                "booking_ref": booking.booking_ref,
+                "refund_id": refund_id,
+                "payment_id": razorpay_payment_id,
+                "error": error_description,
+            },
+        )
+        db.add(notification)
+
+        _write_razorpay_audit(
+            db,
+            action="razorpay.webhook.refund_failed",
+            booking=booking,
+            transaction=transaction,
+            metadata={"refund_id": refund_id, "error": error_description},
+        )
+
+    db.commit()
+    logger.warning("Razorpay refund.failed: refund_id=%s payment_id=%s", refund_id, razorpay_payment_id)
+    return {"status": "recorded", "refund_id": refund_id}
+
+
+def _handle_dispute_created(db: Session, payload: dict) -> dict:
+    """Handle payment.dispute.created webhook — create admin alert for chargeback."""
+    dispute_entity = payload.get("dispute", {}).get("entity", {})
+    dispute_id = dispute_entity.get("id", "")
+    razorpay_payment_id = dispute_entity.get("payment_id", "")
+    amount_paise = dispute_entity.get("amount", 0)
+    reason_code = dispute_entity.get("reason_code", "unknown")
+    reason_description = dispute_entity.get("reason_description", "")
+    amount = amount_paise / 100.0
+
+    transaction = _find_transaction_by_payment_id(db, razorpay_payment_id) if razorpay_payment_id else None
+
+    booking = None
+    if transaction:
+        booking = db.query(models.Booking).filter(models.Booking.id == transaction.booking_id).first()
+
+    booking_ref = booking.booking_ref if booking else razorpay_payment_id
+    user_id = booking.user_id if (booking and booking.user_id) else 1
+
+    # Create admin notification — disputes require manual response within Razorpay SLA
+    notification = models.AdminNotification(
+        user_id=user_id,
+        type="dispute_created",
+        title=f"Chargeback Raised — {booking_ref}",
+        message=(
+            f"A dispute ({dispute_id}) was raised for booking {booking_ref}. "
+            f"Amount: ₹{amount:.2f}. Reason: {reason_code} — {reason_description}. "
+            f"Respond in the Razorpay dashboard before the SLA deadline."
+        ),
+        metadata_json={
+            "dispute_id": dispute_id,
+            "payment_id": razorpay_payment_id,
+            "booking_ref": booking_ref,
+            "amount": amount,
+            "reason_code": reason_code,
+            "reason_description": reason_description,
+        },
+    )
+    db.add(notification)
+
+    if booking:
+        _write_razorpay_audit(
+            db,
+            action="razorpay.webhook.dispute_created",
+            booking=booking,
+            transaction=transaction,
+            metadata={"dispute_id": dispute_id, "reason_code": reason_code, "amount": amount},
+        )
+
+    db.commit()
+    logger.warning(
+        "Razorpay dispute created: dispute_id=%s payment_id=%s amount=%.2f reason=%s",
+        dispute_id, razorpay_payment_id, amount, reason_code,
+    )
+    return {"status": "recorded", "dispute_id": dispute_id}
 
 
 # ─── Phase 7: Refund via Razorpay API ───────────────────────────────────────
