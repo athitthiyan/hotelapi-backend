@@ -177,6 +177,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs" if settings.app_env.lower() != "production" else None,
     redoc_url="/redoc" if settings.app_env.lower() != "production" else None,
+    openapi_url="/openapi.json" if settings.app_env.lower() != "production" else None,
     lifespan=lifespan,
 )
 
