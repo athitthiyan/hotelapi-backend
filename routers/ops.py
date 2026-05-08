@@ -246,3 +246,43 @@ def key_rotation_status(admin: models.User = Depends(get_current_admin)):
     """Check rotation status of all API keys/secrets."""
     from services.key_rotation_service import get_rotation_report
     return get_rotation_report()
+
+# Email Delivery Smoke Test
+
+@router.post("/ops/test-email")
+def send_test_email(
+    admin: models.User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Send a test email to the admin address via Resend to verify delivery."""
+    from database import settings
+    from services.notification_service import _send_via_resend
+    from datetime import datetime, timezone
+
+    if not settings.resend_api_key:
+        raise HTTPException(status_code=503, detail="RESEND_API_KEY is not configured.")
+
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    class _FakeNotification:
+        recipient_email = admin.email
+        subject = "Stayvora Email delivery test"
+        body = (
+            "<h2>Email delivery confirmed</h2>"
+            "<p>Triggered by " + admin.email + " at " + now_str + " UTC.</p>"
+            "<p>Resend is working for " + settings.email_from_address + "</p>"
+        )
+        attachment_pdf = None
+        attachment_filename = None
+
+    try:
+        from_addr = settings.email_from_name + " <" + settings.email_from_address + ">"
+        _send_via_resend(_FakeNotification(), settings.resend_api_key, from_addr)
+        write_audit_log(
+            db, actor_user_id=admin.id, action="ops.email.test_sent",
+            entity_type="admin", entity_id=admin.id, metadata={"to": admin.email},
+        )
+        db.commit()
+        return {"status": "sent", "to": admin.email, "from": settings.email_from_address}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Email delivery failed: " + str(exc))
