@@ -74,7 +74,7 @@ jobs:
           python -m pytest \
             --cov=. \
             --cov-branch \
-            --cov-report=term-missing:skip-covered \
+            --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
             --cov-fail-under=80 \
             -v \

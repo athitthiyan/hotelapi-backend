@@ -1048,6 +1048,18 @@ class ChangePasswordRequest(BaseModel):
     current_password: str = Field(min_length=1, max_length=128)
     new_password: str = Field(min_length=10, max_length=128)
 
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password_strength(cls, value: str) -> str:
+        has_upper = any(c.isupper() for c in value)
+        has_lower = any(c.islower() for c in value)
+        has_digit = any(c.isdigit() for c in value)
+        if not (has_upper and has_lower and has_digit):
+            raise ValueError(
+                "Password must include uppercase, lowercase, and numeric characters"
+            )
+        return value
+
 
 class SetPasswordRequest(BaseModel):
     """Used by SSO-only accounts (hashed_password IS NULL) to set a password for the first time."""
