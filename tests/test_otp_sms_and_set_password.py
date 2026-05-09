@@ -9,7 +9,6 @@ Tests for:
 
 import pytest
 from unittest.mock import MagicMock, patch
-from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 import schemas
@@ -185,33 +184,14 @@ class TestSendSmsTwilio:
 
 
 # --- POST /auth/set-password ---------------------------------------------
-
-@pytest.fixture()
-def client():
-    from main import app
-    return TestClient(app, raise_server_exceptions=False)
-
-
-@pytest.fixture()
-def db_session():
-    import models  # noqa: F401 — ensures all ORM classes register with Base.metadata
-    from database import Base
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
-    Base.metadata.create_all(engine)
-    Session = sessionmaker(bind=engine)
-    session = Session()
-    yield session
-    session.close()
-    Base.metadata.drop_all(engine)
-
+# Uses conftest fixtures (app/client/db_session) which correctly wire get_db
+# to the isolated test SQLite database.
 
 def _make_user(db, *, hashed_password=None, is_admin=False):
     import models
-    from routers.auth import hash_password
+    from routers.auth import hash_password  # noqa: F401
     user = models.User(
-        email="test@example.com",
+        email="set_pw_test@example.com",
         full_name="Test User",
         hashed_password=hashed_password,
         is_admin=is_admin,
@@ -232,18 +212,14 @@ def _token_for(user):
 
 class TestSetPasswordEndpoint:
     def test_sso_user_can_set_password(self, client, db_session):
-        from main import app
-        from database import get_db
         user = _make_user(db_session, hashed_password=None)
         token = _token_for(user)
 
-        app.dependency_overrides[get_db] = lambda: db_session
         resp = client.post(
             "/auth/set-password",
             json={"new_password": "NewSecure123!"},
             headers={"Authorization": f"Bearer {token}"},
         )
-        app.dependency_overrides.clear()
 
         assert resp.status_code == 200
         assert "set successfully" in resp.json()["message"].lower()
@@ -251,19 +227,15 @@ class TestSetPasswordEndpoint:
         assert user.hashed_password is not None
 
     def test_user_with_password_cannot_use_set_password(self, client, db_session):
-        from main import app
-        from database import get_db
         from routers.auth import hash_password
         user = _make_user(db_session, hashed_password=hash_password("OldPass123!"))
         token = _token_for(user)
 
-        app.dependency_overrides[get_db] = lambda: db_session
         resp = client.post(
             "/auth/set-password",
             json={"new_password": "NewSecure123!"},
             headers={"Authorization": f"Bearer {token}"},
         )
-        app.dependency_overrides.clear()
 
         assert resp.status_code == 400
         assert resp.json()["detail"]["code"] == "password_already_set"
@@ -273,33 +245,26 @@ class TestSetPasswordEndpoint:
         assert resp.status_code == 401
 
     def test_set_password_validates_strength(self, client, db_session):
-        from main import app
-        from database import get_db
         user = _make_user(db_session, hashed_password=None)
         token = _token_for(user)
 
-        app.dependency_overrides[get_db] = lambda: db_session
         resp = client.post(
             "/auth/set-password",
             json={"new_password": "weakpassword"},
             headers={"Authorization": f"Bearer {token}"},
         )
-        app.dependency_overrides.clear()
 
         assert resp.status_code == 422
 
     def test_change_password_returns_400_for_sso_user(self, client, db_session):
-        from main import app
-        from database import get_db
         user = _make_user(db_session, hashed_password=None)
         token = _token_for(user)
 
-        app.dependency_overrides[get_db] = lambda: db_session
         resp = client.post(
             "/auth/change-password",
             json={"current_password": "anything", "new_password": "NewSecure123!"},
             headers={"Authorization": f"Bearer {token}"},
         )
-        app.dependency_overrides.clear()
 
-        assert re
+        assert resp.status_code == 400
+        assert resp.json()["detail"]["code"] == "no_password_set"
