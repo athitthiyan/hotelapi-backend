@@ -5,7 +5,6 @@ Covers: get_rotation_status, get_active_key, validate_key_pair,
 """
 
 import os
-import pytest
 from unittest.mock import patch
 
 from services.key_rotation_service import (
