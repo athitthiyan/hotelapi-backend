@@ -285,4 +285,4 @@ def send_test_email(
         db.commit()
         return {"status": "sent", "to": admin.email, "from": settings.email_from_address}
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="Email delivery failed: " + str(exc))
+        raise HTTPException(status_code=502, detail="Email delivery failed: " + str(exc)) from exc
