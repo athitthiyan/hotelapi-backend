@@ -194,6 +194,7 @@ def client():
 
 @pytest.fixture()
 def db_session():
+    import models  # noqa: F401 — ensures all ORM classes register with Base.metadata
     from database import Base
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -301,5 +302,4 @@ class TestSetPasswordEndpoint:
         )
         app.dependency_overrides.clear()
 
-        assert resp.status_code == 400
-        assert resp.json()["detail"]["code"] == "no_password_set"
+        assert re
