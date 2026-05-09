@@ -5,6 +5,22 @@ from routers.auth import hash_password
 import models
 
 
+def user_headers(client, db_session, email="notify-user@example.com"):
+    user = models.User(
+        email=email,
+        full_name="Notify User",
+        hashed_password=hash_password("UserPass123"),
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.commit()
+    login = client.post(
+        "/auth/login",
+        json={"email": email, "password": "UserPass123"},
+    )
+    return {"Authorization": f"Bearer {login.json()['access_token']}"}, user.id
+
+
 def _future_date(days_from_now: int) -> str:
     dt = datetime.now(timezone.utc) + timedelta(days=days_from_now)
     return dt.strftime("%Y-%m-%dT00:00:00+00:00")
@@ -39,6 +55,45 @@ def test_booking_creation_queues_hold_notification(client, create_booking, db_se
     assert len(notifications) == 1
     assert notifications[0].event_type == "booking_hold_created"
     assert notifications[0].status == models.NotificationStatus.PENDING
+
+
+def test_in_app_notifications_can_be_listed_and_marked_read(client, db_session):
+    headers, user_id = user_headers(client, db_session)
+    first = models.AdminNotification(
+        user_id=user_id,
+        type="booking",
+        title="First",
+        message="First message",
+        read=False,
+        metadata_json={"booking_id": 1},
+        created_at=datetime.now(timezone.utc),
+    )
+    second = models.AdminNotification(
+        user_id=user_id,
+        type="payment",
+        title="Second",
+        message="Second message",
+        read=False,
+        created_at=datetime.now(timezone.utc) + timedelta(seconds=1),
+    )
+    db_session.add_all([first, second])
+    db_session.commit()
+
+    listed = client.get("/notifications", headers=headers)
+    mark_one = client.patch(f"/notifications/{first.id}/read", headers=headers)
+    mark_missing = client.patch("/notifications/999999/read", headers=headers)
+    mark_all = client.patch("/notifications/read-all", headers=headers)
+
+    db_session.refresh(first)
+    db_session.refresh(second)
+    assert listed.status_code == 200
+    assert [item["title"] for item in listed.json()["notifications"]] == ["Second", "First"]
+    assert listed.json()["notifications"][1]["metadata"] == {"booking_id": 1}
+    assert mark_one.status_code == 200
+    assert mark_missing.status_code == 200
+    assert mark_all.status_code == 200
+    assert first.read is True
+    assert second.read is True
 
 
 def test_payment_success_queues_confirmation_and_receipt_notifications(

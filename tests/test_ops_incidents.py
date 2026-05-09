@@ -1,6 +1,11 @@
 from datetime import timedelta, timezone, datetime
+import json
+import importlib
+
+from sqlalchemy.exc import SQLAlchemyError
 
 import models
+from routers import ops
 from routers.auth import hash_password
 
 
@@ -127,3 +132,96 @@ def test_force_confirm_endpoint_confirms_paid_booking_with_success_transaction(
     assert response.status_code == 200
     assert db_booking.status == models.BookingStatus.CONFIRMED
     assert db_booking.payment_status == models.PaymentStatus.PAID
+
+
+def test_readiness_check_reports_degraded_when_operational_counts_fail(client, monkeypatch):
+    def raise_counts_error(_db):
+        raise SQLAlchemyError("counts unavailable")
+
+    monkeypatch.setattr(ops, "get_operational_counts", raise_counts_error)
+
+    response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "degraded"
+    assert response.json()["pending_notifications"] == -1
+    assert response.json()["processing_payments"] == -1
+
+
+def test_run_maintenance_endpoint_records_audit_log(client, db_session, monkeypatch):
+    headers = admin_headers(client, db_session)
+
+    def fake_maintenance_cycle(db, payment_timeout_minutes, notification_limit):
+        assert db is not None
+        assert payment_timeout_minutes == 15
+        assert notification_limit == 5
+        return {
+            "reconciled_payments": 0,
+            "processed_notifications": 1,
+            "sent_notifications": 1,
+            "failed_notifications": 0,
+        }
+
+    monkeypatch.setattr(ops, "run_maintenance_cycle", fake_maintenance_cycle)
+
+    response = client.post(
+        "/ops/run-maintenance",
+        headers=headers,
+        params={"payment_timeout_minutes": 15, "notification_limit": 5},
+    )
+    audit_log = db_session.query(models.AuditLog).filter_by(action="ops.maintenance.run").first()
+
+    assert response.status_code == 200
+    assert response.json()["sent_notifications"] == 1
+    assert audit_log is not None
+    assert json.loads(audit_log.metadata_json)["processed_notifications"] == 1
+
+
+def test_key_rotation_status_requires_admin_and_returns_report(client, db_session, monkeypatch):
+    headers = admin_headers(client, db_session)
+    monkeypatch.setattr(
+        "services.key_rotation_service.get_rotation_report",
+        lambda: {"status": "ok", "keys": []},
+    )
+
+    unauthenticated = client.get("/ops/key-rotation-status")
+    authenticated = client.get("/ops/key-rotation-status", headers=headers)
+
+    assert unauthenticated.status_code == 401
+    assert authenticated.status_code == 200
+    assert authenticated.json() == {"status": "ok", "keys": []}
+
+
+def test_test_email_endpoint_covers_missing_success_and_failure_paths(client, db_session, monkeypatch):
+    headers = admin_headers(client, db_session)
+    live_database = importlib.import_module("database")
+    monkeypatch.setattr(live_database.settings, "resend_api_key", "")
+
+    missing_key = client.post("/ops/test-email", headers=headers)
+
+    sent_messages = []
+
+    def fake_send(notification, api_key, from_addr):
+        sent_messages.append((notification.recipient_email, api_key, from_addr))
+
+    monkeypatch.setattr(live_database.settings, "resend_api_key", "re_test")
+    monkeypatch.setattr(live_database.settings, "email_from_name", "Stayvora")
+    monkeypatch.setattr(live_database.settings, "email_from_address", "noreply@stayvora.co.in")
+    monkeypatch.setattr("services.notification_service._send_via_resend", fake_send)
+
+    success = client.post("/ops/test-email", headers=headers)
+    audit_log = db_session.query(models.AuditLog).filter_by(action="ops.email.test_sent").first()
+
+    def failing_send(_notification, _api_key, _from_addr):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr("services.notification_service._send_via_resend", failing_send)
+    failed = client.post("/ops/test-email", headers=headers)
+
+    assert missing_key.status_code == 503
+    assert success.status_code == 200
+    assert success.json()["status"] == "sent"
+    assert sent_messages == [("admin-ops@example.com", "re_test", "Stayvora <noreply@stayvora.co.in>")]
+    assert audit_log is not None
+    assert failed.status_code == 502
+    assert "provider down" in failed.json()["detail"]
