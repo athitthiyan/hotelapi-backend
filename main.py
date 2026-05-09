@@ -938,7 +938,7 @@ def seed_database(db=None):
 async def geocode_address(payload: dict):
     """
     Resolve an address string to latitude/longitude coordinates.
-    Uses OpenStreetMap Nominatim as the geocoding provider (via stdlib urllib).
+    Tries Google Maps Geocoding API first (if key configured), falls back to Nominatim.
     Frontend sends: { "address": "12 Marina Beach Road, Chennai, Tamil Nadu, India" }
     Returns: { "latitude": 13.05, "longitude": 80.28, "formatted_address": "...", "found": true }
     """
@@ -951,34 +951,52 @@ async def geocode_address(payload: dict):
     if not address:
         return {"found": False, "error": "Address is required"}
 
+    google_key = settings.google_maps_api_key if hasattr(settings, "google_maps_api_key") else ""
+
+    def _fetch_google(addr: str):
+        params = urllib.parse.urlencode({"address": addr, "key": google_key})
+        url = f"https://maps.googleapis.com/maps/api/geocode/json?{params}"
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = _json.loads(resp.read().decode())
+        if data.get("status") == "OK" and data.get("results"):
+            r = data["results"][0]
+            loc = r["geometry"]["location"]
+            return {"found": True, "latitude": loc["lat"], "longitude": loc["lng"],
+                    "formatted_address": r.get("formatted_address", addr)}
+        return None
+
     def _fetch_nominatim(addr: str):
-        params = urllib.parse.urlencode({
-            "q": addr,
-            "format": "json",
-            "limit": 1,
-            "addressdetails": 1,
-        })
+        params = urllib.parse.urlencode({"q": addr, "format": "json", "limit": 1, "addressdetails": 1})
         url = f"https://nominatim.openstreetmap.org/search?{params}"
         req = urllib.request.Request(url, headers={"User-Agent": "Stayvora/1.0 (hotel-platform)"})
         with urllib.request.urlopen(req, timeout=10) as resp:
-            return _json.loads(resp.read().decode())
+            results = _json.loads(resp.read().decode())
+        if results:
+            r = results[0]
+            return {"found": True, "latitude": float(r["lat"]), "longitude": float(r["lon"]),
+                    "formatted_address": r.get("display_name", addr)}
+        return None
 
+    loop = asyncio.get_event_loop()
+
+    # Try Google Maps first if API key is set
+    if google_key:
+        try:
+            result = await loop.run_in_executor(None, _fetch_google, address)
+            if result:
+                return result
+        except Exception as exc:
+            logger.warning("Google geocoding failed for '%s': %s", address, exc)
+
+    # Fall back to Nominatim
     try:
-        loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(None, _fetch_nominatim, address)
-
-        if not results:
-            return {"found": False, "error": "Could not geocode this address. Please try a more specific address."}
-
-        result = results[0]
-        return {
-            "found": True,
-            "latitude": float(result["lat"]),
-            "longitude": float(result["lon"]),
-            "formatted_address": result.get("display_name", address),
-        }
+        result = await loop.run_in_executor(None, _fetch_nominatim, address)
+        if result:
+            return result
+        return {"found": False, "error": "Could not geocode this address. Please try a more specific address."}
     except Exception as exc:
-        logger.warning("Geocoding failed for '%s': %s", address, exc)
+        logger.warning("Nominatim geocoding failed for '%s': %s", address, exc)
         return {"found": False, "error": "Geocoding service temporarily unavailable. You can adjust the pin manually."}
 
 

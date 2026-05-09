@@ -110,7 +110,7 @@ class RoomBase(BaseModel):
     review_count: int = 0
     image_url: Optional[str] = None
     gallery_urls: Optional[str] = None
-    amenities: Optional[str] = None
+    amenities: Optional[List[str]] = None
     location: Optional[str] = None
     city: Optional[str] = None
     country: Optional[str] = None
@@ -140,7 +140,7 @@ class RoomUpdate(BaseModel):
     review_count: Optional[int] = None
     image_url: Optional[str] = None
     gallery_urls: Optional[str] = None
-    amenities: Optional[str] = None
+    amenities: Optional[List[str]] = None
     location: Optional[str] = None
     city: Optional[str] = None
     country: Optional[str] = None
@@ -160,6 +160,22 @@ class RoomResponse(RoomBase):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("amenities", mode="before")
+    @classmethod
+    def _coerce_amenities(cls, v):
+        import json as _json
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            try:
+                parsed = _json.loads(v)
+                return parsed if isinstance(parsed, list) else [str(parsed)]
+            except Exception:
+                return [item.strip() for item in v.split(",") if item.strip()]
+        return []
 
 
 class RoomListResponse(BaseModel):
@@ -693,6 +709,24 @@ class PartnerRoomResponse(BaseModel):
     size_sqft: Optional[int] = None
     floor: Optional[int] = None
     created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("amenities", mode="before")
+    @classmethod
+    def _coerce_amenities(cls, v):
+        import json as _json
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            try:
+                parsed = _json.loads(v)
+                return parsed if isinstance(parsed, list) else [str(parsed)]
+            except Exception:
+                return [item.strip() for item in v.split(",") if item.strip()]
+        return []
 
 
 class PartnerRoomListResponse(BaseModel):
