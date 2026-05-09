@@ -183,6 +183,26 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("SENTRY_DSN", "sentry_dsn"),
     )
 
+    # ── SMS — Fast2SMS (Indian OTP delivery, preferred) ───────────────────────
+    fast2sms_api_key: str = Field(
+        default="bNE4oQrU9I7sqG6vldx18C2Vtj0KXzuRfASFPhnpYWOea5MZHLseh072zGtaZDobcgSfd3ORPYAr4nxK",
+        validation_alias=AliasChoices("FAST2SMS_API_KEY", "fast2sms_api_key"),
+    )
+
+    # ── SMS — Twilio (international OTP delivery, fallback) ───────────────────
+    twilio_account_sid: str = Field(
+        default="",
+        validation_alias=AliasChoices("TWILIO_ACCOUNT_SID", "twilio_account_sid"),
+    )
+    twilio_auth_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("TWILIO_AUTH_TOKEN", "twilio_auth_token"),
+    )
+    twilio_from_number: str = Field(
+        default="",
+        validation_alias=AliasChoices("TWILIO_FROM_NUMBER", "twilio_from_number"),
+    )
+
     # ── Feature Toggles ───────────────────────────────────────────────────────
     # Set STRIPE_ENABLED=false in Railway / .env to disable Stripe payments
     # without touching code. Razorpay and mock payments remain available.

@@ -160,6 +160,68 @@ def build_challenge_response(
     )
 
 
+def _send_sms_fast2sms(phone: str, otp: str) -> bool:
+    """Send OTP via Fast2SMS (preferred for Indian numbers). Returns True on success."""
+    from database import settings
+    import httpx
+
+    if not settings.fast2sms_api_key:
+        return False
+
+    # Fast2SMS needs a 10-digit Indian mobile number
+    digits = "".join(filter(str.isdigit, phone))
+    if digits.startswith("91") and len(digits) == 12:
+        digits = digits[2:]
+    digits = digits[-10:]
+    if len(digits) != 10:
+        logger.warning("Fast2SMS: cannot parse 10-digit number from %s", phone)
+        return False
+
+    try:
+        resp = httpx.post(
+            "https://www.fast2sms.com/dev/bulkV2",
+            headers={"authorization": settings.fast2sms_api_key},
+            json={
+                "route": "otp",
+                "variables_values": otp,
+                "numbers": digits,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("return") is True:
+            logger.info("SMS sent via Fast2SMS to %s", phone)
+            return True
+        logger.warning("Fast2SMS returned error: %s", data)
+        return False
+    except Exception as exc:
+        logger.error("Fast2SMS send failed for %s: %s", phone, exc)
+        return False
+
+
+def _send_sms_twilio(phone: str, otp: str) -> bool:
+    """Send OTP via Twilio (international fallback). Returns True on success."""
+    from database import settings
+
+    if not (settings.twilio_account_sid and settings.twilio_auth_token and settings.twilio_from_number):
+        return False
+
+    try:
+        from twilio.rest import Client  # type: ignore[import]
+        client = Client(settings.twilio_account_sid, settings.twilio_auth_token)
+        message = client.messages.create(
+            body=f"Your Stayvora verification code is {otp}. It expires in 5 minutes. Do not share this code.",
+            from_=settings.twilio_from_number,
+            to=phone,
+        )
+        logger.info("SMS sent via Twilio to %s (sid=%s)", phone, message.sid)
+        return True
+    except Exception as exc:
+        logger.error("Twilio send failed for %s: %s", phone, exc)
+        return False
+
+
 def send_otp_notification(
     db: Session,
     *,
@@ -180,7 +242,17 @@ def send_otp_notification(
             ),
         )
         return
-    logger.info("OTP SMS dispatch requested for %s %s", flow.value, recipient)
+
+    # Phone OTP — try Fast2SMS first (India), fall back to Twilio (international)
+    sent = _send_sms_fast2sms(recipient, otp)
+    if not sent:
+        sent = _send_sms_twilio(recipient, otp)
+    if not sent:
+        logger.warning(
+            "Phone OTP could not be sent to %s — no SMS provider configured. "
+            "Set FAST2SMS_API_KEY or TWILIO_* env vars.",
+            recipient,
+        )
 
 
 def issue_otp_challenge(
@@ -291,7 +363,9 @@ def issue_otp_challenge(
             "resend_count": challenge.resend_count,
         },
     )
-    dev_code = otp if channel == schemas.OtpChannel.PHONE or True else None
+    # Only expose dev_code in non-production (never leak OTP in prod responses)
+    from database import settings as _settings
+    dev_code = otp if _settings.app_env.lower() != "production" else None
     return challenge, dev_code
 
 
