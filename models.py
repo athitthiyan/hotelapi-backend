@@ -131,6 +131,11 @@ class User(Base):
     password_reset_tokens = relationship("PasswordResetToken", back_populates="user")
     otp_challenges = relationship("OtpChallenge", back_populates="user")
 
+    @property
+    def has_password(self) -> bool:
+        """True when the account has a local password set (False for SSO-only accounts)."""
+        return bool(self.hashed_password)
+
 
 class PartnerHotel(Base):
     __tablename__ = "partner_hotels"

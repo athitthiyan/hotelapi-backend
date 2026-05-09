@@ -502,6 +502,7 @@ class UserResponse(BaseModel):
     is_admin: bool
     is_partner: bool
     is_active: bool
+    has_password: bool = False  # False for SSO-only accounts; frontend uses this to show Set vs Change password form
     created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
@@ -1045,6 +1046,11 @@ class ResetPasswordRequest(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=10, max_length=128)
+
+
+class SetPasswordRequest(BaseModel):
+    """Used by SSO-only accounts (hashed_password IS NULL) to set a password for the first time."""
     new_password: str = Field(min_length=10, max_length=128)
 
     @field_validator("new_password")

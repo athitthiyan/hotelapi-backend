@@ -732,11 +732,41 @@ def change_password(
     user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if not user.hashed_password or not verify_password(payload.current_password, user.hashed_password):
+    if not user.hashed_password:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "no_password_set",
+                "message": "This account uses social login and has no password. Use POST /auth/set-password to set one.",
+            },
+        )
+    if not verify_password(payload.current_password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Current password is incorrect")
     user.hashed_password = hash_password(payload.new_password)
     db.commit()
     return schemas.MessageResponse(message="Password changed successfully")
+
+
+@router.post("/set-password", response_model=schemas.MessageResponse)
+def set_password(
+    payload: schemas.SetPasswordRequest,
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Set a password for the first time on an SSO-only account (hashed_password IS NULL).
+    Once a password is set, use POST /auth/change-password for future changes.
+    """
+    if user.hashed_password:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "password_already_set",
+                "message": "A password is already set on this account. Use POST /auth/change-password to update it.",
+            },
+        )
+    user.hashed_password = hash_password(payload.new_password)
+    db.commit()
+    return schemas.MessageResponse(message="Password set successfully. You can now sign in with your email and password.")
 
 
 # ─── Forgot / Reset Password ───────────────────────────────────────────────────
