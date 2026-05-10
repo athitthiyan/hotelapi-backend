@@ -172,7 +172,18 @@ class RoomResponse(RoomBase):
         if isinstance(v, str):
             try:
                 parsed = _json.loads(v)
-                return parsed if isinstance(parsed, list) else [str(parsed)]
+                if isinstance(parsed, list):
+                    return parsed
+                # Handle double-encoded JSON: first parse gave a string, try again
+                if isinstance(parsed, str):
+                    try:
+                        inner = _json.loads(parsed)
+                        if isinstance(inner, list):
+                            return inner
+                    except Exception:
+                        pass
+                    return [item.strip() for item in parsed.split(",") if item.strip()]
+                return [str(parsed)]
             except Exception:
                 return [item.strip() for item in v.split(",") if item.strip()]
         return []
@@ -723,7 +734,18 @@ class PartnerRoomResponse(BaseModel):
         if isinstance(v, str):
             try:
                 parsed = _json.loads(v)
-                return parsed if isinstance(parsed, list) else [str(parsed)]
+                if isinstance(parsed, list):
+                    return parsed
+                # Handle double-encoded JSON: first parse gave a string, try again
+                if isinstance(parsed, str):
+                    try:
+                        inner = _json.loads(parsed)
+                        if isinstance(inner, list):
+                            return inner
+                    except Exception:
+                        pass
+                    return [item.strip() for item in parsed.split(",") if item.strip()]
+                return [str(parsed)]
             except Exception:
                 return [item.strip() for item in v.split(",") if item.strip()]
         return []
