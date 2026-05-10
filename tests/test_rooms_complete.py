@@ -197,7 +197,7 @@ class TestGetRooms:
             city="Chennai",
             location="Near Marina Beach",
             rating=4.7,
-            amenities='["WiFi","Breakfast","Family"]',
+            amenities=["WiFi", "Breakfast", "Family"],
         )
         create_room_via_api(
             client,
@@ -206,7 +206,7 @@ class TestGetRooms:
             city="Chennai",
             location="Near Central",
             rating=3.8,
-            amenities='["WiFi"]',
+            amenities=["WiFi"],
         )
 
         r = client.get(
