@@ -165,28 +165,23 @@ class RoomResponse(RoomBase):
     @classmethod
     def _coerce_amenities(cls, v):
         import json as _json
-        if v is None:
+        if v is None or not isinstance(v, (str, list)):
             return []
         if isinstance(v, list):
             return v
-        if isinstance(v, str):
+        # Unwrap up to 2 levels of JSON encoding (handles single- and double-encoded strings)
+        current = v
+        for _ in range(2):
             try:
-                parsed = _json.loads(v)
-                if isinstance(parsed, list):
-                    return parsed
-                # Handle double-encoded JSON: first parse gave a string, try again
-                if isinstance(parsed, str):
-                    try:
-                        inner = _json.loads(parsed)
-                        if isinstance(inner, list):
-                            return inner
-                    except Exception:
-                        pass
-                    return [item.strip() for item in parsed.split(",") if item.strip()]
-                return [str(parsed)]
+                parsed = _json.loads(current)
             except Exception:
-                return [item.strip() for item in v.split(",") if item.strip()]
-        return []
+                break  # not valid JSON — fall through to comma-split
+            if isinstance(parsed, list):
+                return parsed
+            if not isinstance(parsed, str):
+                return [str(parsed)]
+            current = parsed  # string inside string — try one more parse
+        return [item.strip() for item in current.split(",") if item.strip()]
 
 
 class RoomListResponse(BaseModel):
@@ -727,28 +722,23 @@ class PartnerRoomResponse(BaseModel):
     @classmethod
     def _coerce_amenities(cls, v):
         import json as _json
-        if v is None:
+        if v is None or not isinstance(v, (str, list)):
             return []
         if isinstance(v, list):
             return v
-        if isinstance(v, str):
+        # Unwrap up to 2 levels of JSON encoding (handles single- and double-encoded strings)
+        current = v
+        for _ in range(2):
             try:
-                parsed = _json.loads(v)
-                if isinstance(parsed, list):
-                    return parsed
-                # Handle double-encoded JSON: first parse gave a string, try again
-                if isinstance(parsed, str):
-                    try:
-                        inner = _json.loads(parsed)
-                        if isinstance(inner, list):
-                            return inner
-                    except Exception:
-                        pass
-                    return [item.strip() for item in parsed.split(",") if item.strip()]
-                return [str(parsed)]
+                parsed = _json.loads(current)
             except Exception:
-                return [item.strip() for item in v.split(",") if item.strip()]
-        return []
+                break  # not valid JSON — fall through to comma-split
+            if isinstance(parsed, list):
+                return parsed
+            if not isinstance(parsed, str):
+                return [str(parsed)]
+            current = parsed  # string inside string — try one more parse
+        return [item.strip() for item in current.split(",") if item.strip()]
 
 
 class PartnerRoomListResponse(BaseModel):
@@ -1228,32 +1218,4 @@ class WishlistStatusResponse(BaseModel):
     room_ids: list[int]
 
 
-# ─── Razorpay Schemas ─────────────────────────────────────────────────────────
-
-class RazorpayOrderRequest(BaseModel):
-    booking_id: int
-    payment_method: str  # upi, gpay, phonepe, card, netbanking, wallet, mock
-    idempotency_key: Optional[str] = None
-
-
-class RazorpayOrderResponse(BaseModel):
-    order_id: str
-    transaction_ref: str
-    amount_paise: int
-    currency: str
-    key_id: str
-    idempotent: bool = False
-
-
-class RazorpayVerifyRequest(BaseModel):
-    razorpay_order_id: str
-    razorpay_payment_id: str
-    razorpay_signature: str
-    transaction_ref: str
-
-
-class RazorpayVerifyResponse(BaseModel):
-    status: str
-    transaction_ref: str
-    razorpay_payment_id: str
-    booking_status: Optional[str] = None
+# ─── Razorpay Schemas ──────────────────────────────────────────────
